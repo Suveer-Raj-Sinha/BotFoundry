@@ -1,0 +1,14 @@
+*.db
+*.egg-info/
+*.local
+*.pyc
+.env
+.pytest_cache/
+.venv/
+__pycache__/
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/target/
+dist/
+engine/build/
+node_modules/
+target/
