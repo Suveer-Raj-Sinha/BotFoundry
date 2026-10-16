@@ -1,51 +1,70 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useCallback, useEffect, useState } from "react";
+import { loadEngineConfig } from "./api/config";
+import { EngineError, fetchHealth, type HealthResponse } from "./api/engine";
+import "./status.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type State =
+  | { kind: "checking" }
+  | { kind: "ok"; health: HealthResponse }
+  | { kind: "error"; message: string };
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+const POLL_MS = 5000;
+
+function describeError(err: unknown): string {
+  if (err instanceof EngineError) {
+    if (err.kind === "unreachable") return "Engine not reachable. Is it running on the expected port?";
+    if (err.kind === "unauthorized") return "Engine rejected the token. Check VITE_ENGINE_TOKEN.";
+    return err.message;
   }
+  return err instanceof Error ? err.message : "Unknown error.";
+}
+
+export default function App() {
+  const [state, setState] = useState<State>({ kind: "checking" });
+
+  const check = useCallback(async () => {
+    try {
+      const health = await fetchHealth(loadEngineConfig());
+      setState({ kind: "ok", health });
+    } catch (err) {
+      setState({ kind: "error", message: describeError(err) });
+    }
+  }, []);
+
+  useEffect(() => {
+    check();
+    const id = setInterval(check, POLL_MS);
+    return () => clearInterval(id);
+  }, [check]);
+
+  const cls = state.kind === "ok" ? "ok" : state.kind === "error" ? "err" : "wait";
+  const label = state.kind === "ok" ? "Engine connected" : state.kind === "error" ? "Engine offline" : "Checking engine...";
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+    <main className="shell">
+      <h1>BotFoundry</h1>
+      <p className="tag">Your tools. Your bots. Your machine. Real work.</p>
+      <section className="card" aria-live="polite">
+        <div className={`pill ${cls}`}>
+          <span className="dot" /> {label}
+        </div>
+        {state.kind === "error" && (
+          <>
+            <p className="msg">{state.message}</p>
+            <button onClick={check}>Retry</button>
+          </>
+        )}
+        {state.kind === "ok" && (
+          <>
+            <div className="row"><span className="label">Engine version</span><span>{state.health.engine_version}</span></div>
+            <div className="row"><span className="label">Python</span><span>{state.health.python_version}</span></div>
+            <div className="row">
+              <span className="label">Local AI</span>
+              <span>{state.health.ai_available ? "Available" : "Not configured (optional)"}</span>
+            </div>
+          </>
+        )}
+      </section>
     </main>
   );
 }
-
-export default App;

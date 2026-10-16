@@ -8,3 +8,5 @@ target/
 .pytest_cache/
 .env
 *.egg-info/
+
+*.local
