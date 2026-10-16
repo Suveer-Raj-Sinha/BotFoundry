@@ -28,3 +28,18 @@ class PortSpec(BaseModel):
     type: DataType = DataType.ANY
     required: bool = True  # only meaningful for inputs
     description: str = ""
+
+
+def matches_type(value: object, data_type: DataType) -> bool:
+    """Does a runtime value fit a port type? (bool is not a number.)"""
+    if data_type == DataType.ANY:
+        return True
+    if data_type == DataType.STRING:
+        return isinstance(value, str)
+    if data_type == DataType.NUMBER:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if data_type == DataType.BOOLEAN:
+        return isinstance(value, bool)
+    if data_type == DataType.OBJECT:
+        return isinstance(value, dict)
+    return isinstance(value, list)  # DataType.LIST

@@ -5,7 +5,7 @@ Your tools. Your bots. Your machine. Real work.
 Local-first Windows desktop automation platform (Tauri + React/TS + Python/FastAPI + SQLite).
 
 ## Status
-Phase 0b: desktop shell. Engine 0.4.0, app 0.4.0. See `engine/CHANGELOG.md` and `apps/desktop/CHANGELOG.md`.
+Phase 0b: desktop shell. Engine 0.5.0, app 0.4.0. See `engine/CHANGELOG.md` and `apps/desktop/CHANGELOG.md`.
 
 ## Versions and changelogs
 - Engine version: `engine/botfoundry/__init__.py` (single source). App version: `package.json`,

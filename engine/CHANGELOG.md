@@ -5,6 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.5.0] - 2026-10-16
+
+### Added
+- Workflow runner, Phase 1.2 (`workflow/runner.py`: `Run`, `run_workflow`):
+  - Sequential execution in dependency order (ties broken by declaration order, so runs are deterministic).
+  - Branching: inactive output ports skip the nodes that depend on them (skips cascade); optional
+    inputs may be inactive.
+  - Per-node timeouts that really interrupt the handler.
+  - Cooperative cancellation from any thread: cancellable nodes are interrupted mid-run;
+    non-cancellable nodes finish first, then the run is cancelled. Cancelling the asyncio task still
+    leaves the run in a terminal state.
+  - Runtime checks: input types, handler result shape, undeclared output ports and output types.
+  - Failure policy: the first failed node stops the run; remaining nodes are marked skipped with the
+    reason recorded. Unexpected exceptions are reported as `node.unexpected_error`, never swallowed.
+  - Invalid workflows never start (validation runs first and its issues are in the events).
+  - Run and node state records with a JSON snapshot (`Run.snapshot()`).
+- Structured events (`workflow/events.py`): every event type from the spec (the approval events are
+  defined but only emitted from Phase 2), plus `node_skipped`. Per-run ids 1, 2, 3..., UTC timestamps,
+  thread-safe log, cursor polling (`events.since(id)`), live listeners that cannot break a run.
+  Exactly one terminal event per run.
+- `types.matches_type` for runtime port-type checks.
+- 29 runner tests (93 in total). Seven deliberate breakages of the runner (no timeouts, no skipping,
+  no result checks, ignored cancellation, failure not stopping the run, no input checks, validation
+  bypass) are each caught by the tests.
+
+### Not yet
+- Runs are kept in memory only (persistence is Phase 1.3). No API or CLI to start runs yet (Phase 1.4).
+
 ## [0.4.0] - 2026-10-16
 
 ### Added

@@ -1,6 +1,6 @@
 # Node contract and workflow format
 
-Status: engine 0.4.0 (Phase 1.1). Code: `engine/botfoundry/workflow/`.
+Status: engine 0.5.0 (Phase 1.1 and 1.2). Code: `engine/botfoundry/workflow/`.
 
 ## A node (a registered, typed operation)
 Every node type is a `NodeSpec` that defines:
@@ -45,3 +45,42 @@ Never raises for bad workflows. Returns issues with stable codes, severity, and 
 | `node.unreachable` | warning | Not reachable from the trigger |
 
 The result also lists `required_permissions`: the union of all nodes' permissions.
+
+## Execution (`workflow/runner.py`)
+```python
+run = Run(definition, registry)      # emits run_created
+unsubscribe = run.events.subscribe(callback)   # optional live listener
+await run.execute()                  # validate, then run nodes in order
+run.cancel()                         # any time, any thread
+run.snapshot()                       # JSON-friendly state of the run and every node
+```
+- Run status: `created, validating, running, completed, failed, cancelled`.
+- Node status: `pending, running, completed, failed, skipped, cancelled`.
+- **Failure policy:** the first failed node stops the run; remaining nodes are `skipped` with a reason.
+- **Timeouts:** `NodeSpec.timeout_seconds` per node. On timeout the handler task is cancelled and the node fails with `node.timeout`.
+- **Cancellation:** cancellable nodes are interrupted immediately; non-cancellable nodes finish, then the run stops as `cancelled`.
+- **Runtime checks** (a node can never return something the contract does not allow): input types
+  (`node.invalid_input`), result shape and output ports/types (`node.invalid_result`).
+- Error codes written to `node.error.code`: `node.timeout`, `node.unexpected_error`, `node.invalid_input`,
+  `node.invalid_result`, or any code a handler raises with `NodeError`.
+
+## Events
+Each event: `id` (1, 2, 3... per run), `run_id`, `type`, `timestamp` (UTC), `node_id` (when relevant), `payload`.
+
+| Type | Payload |
+|---|---|
+| `run_created` | workflow_id, workflow_name, node_count |
+| `validation_started` | - |
+| `validation_succeeded` | warnings[], required_permissions[] |
+| `validation_failed` | issues[] |
+| `node_started` | type, version |
+| `node_progress` | fraction (0..1 or null), message |
+| `node_completed` | summary, output_ports[], duration_ms |
+| `node_failed` | error{code,message,details}, duration_ms |
+| `node_skipped` | reason |
+| `run_completed` | completed, skipped, duration_ms |
+| `run_failed` | error, failed_node, duration_ms |
+| `run_cancelled` | reason, running_node, not_started[], duration_ms |
+| `approval_requested/granted/denied` | reserved for Phase 2 |
+
+Exactly one of `run_completed`, `run_failed`, `run_cancelled` ends every run. Poll with `events.since(last_id)`.
