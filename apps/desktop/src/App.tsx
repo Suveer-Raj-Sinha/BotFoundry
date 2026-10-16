@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { loadEngineConfig } from "./api/config";
 import { EngineError, fetchHealth, type HealthResponse } from "./api/engine";
 import "./status.css";
@@ -8,37 +8,63 @@ type State =
   | { kind: "ok"; health: HealthResponse }
   | { kind: "error"; message: string };
 
-const POLL_MS = 5000;
+const POLL_OK_MS = 5000; // engine is healthy: check occasionally
+const POLL_RETRY_MS = 1000; // not connected yet: check quickly
+const STARTUP_GRACE_ATTEMPTS = 10; // show "Checking" (not an error) while the engine boots
 
 function describeError(err: unknown): string {
   if (err instanceof EngineError) {
-    if (err.kind === "unreachable") return "Engine not reachable. Is it running on the expected port?";
-    if (err.kind === "unauthorized") return "Engine rejected the token. Check VITE_ENGINE_TOKEN.";
+    if (err.kind === "unreachable") return "Engine not reachable. It may have stopped or failed to start.";
+    if (err.kind === "unauthorized") return "Engine rejected the token.";
     return err.message;
   }
+  if (typeof err === "string") return err; // message from the Rust launcher
   return err instanceof Error ? err.message : "Unknown error.";
 }
 
 export default function App() {
   const [state, setState] = useState<State>({ kind: "checking" });
+  const failures = useRef(0);
+  const everConnected = useRef(false);
 
-  const check = useCallback(async () => {
+  /** Returns true if the engine answered healthy. */
+  const check = useCallback(async (): Promise<boolean> => {
     try {
-      const health = await fetchHealth(loadEngineConfig());
+      const config = await loadEngineConfig();
+      const health = await fetchHealth(config);
+      everConnected.current = true;
+      failures.current = 0;
       setState({ kind: "ok", health });
+      return true;
     } catch (err) {
-      setState({ kind: "error", message: describeError(err) });
+      failures.current += 1;
+      const stillBooting =
+        err instanceof EngineError &&
+        err.kind === "unreachable" &&
+        !everConnected.current &&
+        failures.current <= STARTUP_GRACE_ATTEMPTS;
+      setState(stillBooting ? { kind: "checking" } : { kind: "error", message: describeError(err) });
+      return false;
     }
   }, []);
 
   useEffect(() => {
-    check();
-    const id = setInterval(check, POLL_MS);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const loop = async () => {
+      const healthy = await check();
+      if (!cancelled) timer = setTimeout(loop, healthy ? POLL_OK_MS : POLL_RETRY_MS);
+    };
+    loop();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [check]);
 
   const cls = state.kind === "ok" ? "ok" : state.kind === "error" ? "err" : "wait";
-  const label = state.kind === "ok" ? "Engine connected" : state.kind === "error" ? "Engine offline" : "Checking engine...";
+  const label =
+    state.kind === "ok" ? "Engine connected" : state.kind === "error" ? "Engine offline" : "Starting engine...";
 
   return (
     <main className="shell">
@@ -51,7 +77,7 @@ export default function App() {
         {state.kind === "error" && (
           <>
             <p className="msg">{state.message}</p>
-            <button onClick={check}>Retry</button>
+            <button onClick={() => void check()}>Retry</button>
           </>
         )}
         {state.kind === "ok" && (
