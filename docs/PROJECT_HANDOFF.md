@@ -3,7 +3,7 @@
 Purpose of this file: let you (or any AI assistant) continue the project from exactly where it stands,
 with no access to the earlier chat. Read it top to bottom once, then use sections 8 and 12.
 
-Last updated: 2026-10-16. Engine 0.5.0, app 0.4.0.
+Last updated: 2026-10-18. Engine 0.6.0, app 0.5.0.
 
 ---
 
@@ -43,7 +43,10 @@ Bots: **The Fixer** (file organizer, the MVP), The Builder (developer automation
   folder instead of giving extract commands.
 - Never claim to have run, built or tested something you did not. State what is unverified (the assistant
   could not run Windows/Tauri builds; I run them and paste back results).
-- Every change that adds or alters behavior gets a changelog entry and a version bump (section 7).
+- Every change that adds or alters behavior gets a changelog entry and a version bump (section 6, Versioning).
+- Every step comes with a **git commit plan** (several small, logical commits with exact `git add <paths>` commands and
+  conventional messages) and an updated `.gitignore` whenever new generated files, data or secrets appear.
+  The repo is going on GitHub; see `docs/GIT_WORKFLOW.md`. Never suggest empty or padding commits.
 - Run tests and the version check before handing files over.
 - Don't skip ahead; finish and test each phase first. Propose architecture changes before making them.
 
@@ -70,11 +73,11 @@ Bots: **The Fixer** (file organizer, the MVP), The Builder (developer automation
 | 0a | Engine skeleton: `/health`, token auth, CORS allowlist, tests | Done, verified on my machine |
 | 0b | Tauri + React shell, status screen, Rust launcher, parent watchdog, frozen engine, packaged build | Done, I confirmed every step passed on my machine |
 | 1.1 | Node contract, registry, workflow format, validation, 3 built-in nodes | Delivered (64 tests in the assistant's sandbox) |
-| 1.2 | Runner: sequential execution, branching, events, timeouts, cancellation, error results | **Delivered; 93 engine tests pass in the assistant's sandbox (Linux). I have not yet confirmed 1.1 or 1.2 on Windows.** First action: run the tests and commit (section 8). |
-| 1.3 | SQLite + migrations, data-directory setting, persisted runs/events | **Next** |
+| 1.2 | Runner: sequential execution, branching, events, timeouts, cancellation, error results | Delivered (93 tests in the assistant's sandbox) |
+| 1.3 | SQLite + migrations, data-directory setting, persisted runs/events, restart safety | **Delivered; 128 engine tests pass in the assistant's sandbox (Linux), and the Rust launcher and frozen engine were exercised there. I have not yet confirmed 1.1, 1.2 or 1.3 on Windows.** First action: run the tests, then commit using the commit plan in the step 1.3 instructions. |
 | 1.4 | Local API (validate/run/events/cancel) + CLI | Planned |
 
-Tests: engine 93 (pytest), app 6 (Vitest). Versions: engine 0.5.0, app 0.4.0.
+Tests: engine 128 (pytest), app 6 (Vitest). Versions: engine 0.6.0, app 0.5.0.
 
 **Decision made for 1.2:** the first failed node stops the run and later nodes are marked skipped with a reason
 (simple and predictable; revisit only if needed). Per-item "skip and report" behavior for the Fixer happens
@@ -165,6 +168,16 @@ node `pending/running/completed/failed/skipped/cancelled`. Timeouts really inter
 finish before a cancel takes effect; handler results and input types are checked at runtime; exactly one terminal
 event per run. The `node_skipped` event was added beyond the spec's list.
 
+**Persistence (engine 0.6.0; see `docs/persistence.md`)**
+SQLite at `<data-dir>/botfoundry.db` (WAL). One connection + lock, explicit transactions. Append-only migrations applied
+atomically (a database from a newer version is refused, never modified). Tables: `workflows`, `runs` (with the exact
+`workflow_snapshot` that ran and a reserved `rulebook_version`), `node_runs`, `run_events`, `schema_migrations`.
+`storage.attach(run)` before `execute()` mirrors every event and its state; database failures never break a run (logged,
+counted in `persister.errors`). At start-up `mark_interrupted_runs()` fails any unfinished run with `run.interrupted`
+and never resumes it. Data dir: `--data-dir`; dev `engine/.data` (git-ignored); packaged `%LOCALAPPDATA%\com.botfoundry.app`;
+hand-started engine default `%LOCALAPPDATA%\BotFoundry`. `/health` reports `database_schema_version`. An unreadable database
+stops start-up with exit code 2 and is left untouched.
+
 **Event model (from the spec)**
 Run created; validation started/succeeded/failed; node started; node progress; node completed; node failed;
 approval requested; approval granted/denied; run cancelled; run completed; run failed. Events carry a stable id,
@@ -184,9 +197,10 @@ Transport: polling with a cursor first; SSE/WebSocket only if justified.
 ```
 botfoundry/
   README.md
-  .gitignore                      (includes engine/build/, src-tauri/binaries/, src-tauri/target/, *.local)
+  .gitignore .gitattributes       (ignore venv, node_modules, target, dist, build output, binaries, databases, logs, secrets)
   docs/node-contract.md           node + workflow contract
   docs/PROJECT_HANDOFF.md         this file
+  docs/persistence.md  docs/GIT_WORKFLOW.md
   scripts/bump.py                 versions + changelog sync/check
   scripts/build_engine.py         freeze engine, smoke-test, stage as sidecar
   shared/workflow-schemas/        reserved for exported JSON Schemas / generated TS types
@@ -196,12 +210,15 @@ botfoundry/
     run_engine.py                 entry point for the frozen exe
     botfoundry/
       __init__.py                 __version__  (single source of truth)
-      __main__.py                 CLI: --port, --parent-pid; token from BOTFOUNDRY_TOKEN
+      __main__.py                 CLI: --port, --data-dir, --parent-pid; token from BOTFOUNDRY_TOKEN
+      startup.py                  open_storage(): open DB, migrate, fail interrupted runs
       config.py                   Settings, TOKEN_HEADER, CORS origins
       lifecycle.py                is_process_alive, watch_parent
       api/app.py security.py routes_health.py
       workflow/ types.py node.py registry.py definition.py validation.py builtin_nodes.py events.py runner.py
+      storage/ database.py migrations.py repository.py (Storage, RunPersister)
     tests/ test_health.py test_lifecycle.py test_version.py test_node_contract.py test_workflow_validation.py test_runner.py
+             test_migrations.py test_storage.py test_startup.py
   apps/desktop/                   Tauri 2 + React + TypeScript
     CHANGELOG.md
     package.json  (scripts: dev, build, tauri, test = "vitest run")
@@ -247,6 +264,10 @@ npm run tauri build -- --no-bundle --config src-tauri/tauri.release.conf.json
 .\src-tauri\target\release\desktop.exe
 Get-Content "$env:LOCALAPPDATA\com.botfoundry.app\engine.log"
 
+# Git (see docs/GIT_WORKFLOW.md)
+git status ; git switch -c <branch> ; git add <paths> ; git commit -m "feat(scope): summary"
+git tag -a engine-v0.6.0 -m "..." ; git push origin --tags
+
 # Look for leftover engine processes
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*botfoundry*' } | Select-Object ProcessId, CommandLine
 Get-Process botfoundry-engine -ErrorAction SilentlyContinue
@@ -270,7 +291,8 @@ Get-Process botfoundry-engine -ErrorAction SilentlyContinue
 
 ## 10. Known limitations / TODO
 
-- Runs exist in memory only: no persistence yet (1.3), no API/CLI to start or watch runs yet (1.4). Approval events are defined but not emitted until Phase 2.
+- No API endpoints or CLI to start, watch, cancel or list runs and workflows yet (Phase 1.4); persistence works but nothing in the app calls it yet.
+- Approval events are defined but not emitted until Phase 2. Node outputs are not size-capped yet.
 - Rulebook, permissions enforcement, The Fixer, canvas, Ledger: not started.
 - Template `opener` Tauri plugin is still registered but unused.
 - No installer or code signing yet (Phase 6). Frozen-engine Windows startup time not measured.
@@ -280,30 +302,26 @@ Get-Process botfoundry-engine -ErrorAction SilentlyContinue
 
 ---
 
-## 11. Next milestone: Phase 1.3 (persistence)
+## 11. Next milestone: Phase 1.4 (local API and CLI)
 
-Build `engine/botfoundry/storage/` (SQLite, standard library `sqlite3` or a thin layer; no ORM needed):
-- **Data directory setting:** the engine takes `--data-dir`. The Rust launcher passes
-  `%LOCALAPPDATA%\com.botfoundry.app` (the same folder as `engine.log`) in release; dev uses a folder under the repo
-  that is git-ignored. Create it if missing; the DB file lives inside it.
-- **Migrations:** a `schema_migrations` table and ordered, idempotent migration steps run at startup; never edit an
-  applied migration, add a new one. Test: fresh DB, upgrade path, and re-running is a no-op.
-- **Tables (proposed):** `workflows` (id, name, definition JSON, created/updated), `runs` (run_id, workflow_id,
-  workflow snapshot JSON, status, error JSON, created/finished), `node_runs` (run_id, node_id, status, outputs JSON,
-  summary, error JSON, reason, timings), `run_events` (run_id, id, type, timestamp, node_id, payload JSON).
-  Store the workflow definition used by each run (workflows can be edited later). Reserve a `rulebook_version`
-  column on `runs` for Phase 2.
-- **Persist as events happen:** subscribe to `run.events`, write each event and node state change in a transaction.
-  The DB, not memory, becomes the record that survives restarts.
-- **Restart safety (spec: avoid duplicate execution after restart):** on startup, any run still `created/validating/running`
-  is marked `failed` with error code `run.interrupted` and a final `run_failed` event; never auto-resume.
-- **Reading API in code (used by 1.4):** list runs, get run, get node results, events since a cursor, save/load/list workflows.
-- Tests: persistence round trip, restart simulation (run interrupted, reopen DB, status becomes `run.interrupted`),
-  event cursor reads, migration tests, corrupt/locked DB handled with a clear error.
-- Then bump engine to 0.6.0 with a changelog entry and run `bump.py check`.
+Goal: make everything built so far usable from outside the engine, so the UI (Phase 4) is only a client.
+- **Endpoints** (all behind the existing token auth; Pydantic request/response models; stable error format):
+  `GET /nodes` (catalog from `registry.catalog()`), `POST /workflows/validate`, `GET/PUT/DELETE /workflows(/{id})`,
+  `POST /runs` (body: `workflow_id` or an inline definition), `GET /runs`, `GET /runs/{id}` (with node results),
+  `GET /runs/{id}/events?after=<id>&limit=` (cursor polling), `POST /runs/{id}/cancel`.
+- **Run manager:** starts `Run(...)` + `storage.attach(run)` + `execute()` as a background asyncio task, keeps active runs
+  in a dict (for cancel), removes them when finished, and on engine shutdown cancels active runs and waits briefly so
+  they end in a persisted terminal state. Reject starting a run for a workflow that fails validation (return the issues).
+- **CLI** without breaking the existing invocation (`python -m botfoundry --port N --data-dir D --parent-pid P` must
+  still start the server, because the Rust launcher and the frozen exe use it): add subcommands `serve` (default),
+  `validate FILE`, `run FILE` (prints events as they happen, exit code 0/1/130 for completed/failed/cancelled), `nodes`.
+- Persist-or-fail rule: if the database cannot record a run, tell the caller (include `persistence_errors` in the run
+  response) rather than pretending history was saved.
+- Tests with FastAPI `TestClient`: auth required on every endpoint, validate good/bad, CRUD, start/poll/cancel a run, event
+  cursor, 404s, invalid bodies (422 in the project's error format), CLI via subprocess. Keep the frozen-exe smoke test green.
+- Bump engine to 0.7.0, changelog entry, `bump.py check`; update `docs/` and this file; provide the git commit plan.
 
-Phase 1.4 after that: API endpoints (validate, start run, get run, events since cursor, cancel, node catalog,
-workflows CRUD) behind the existing token auth, plus a CLI (`python -m botfoundry run workflow.json`).
+Then Phase 2 (Rulebook and enforcement) starts the safety layer: see section 5.
 
 ---
 
@@ -314,8 +332,9 @@ Paste this, and attach: `Plan.docx`, this file, and `BotFoundry_source_snapshot.
 > I'm building BotFoundry, a local-first Windows desktop automation platform (Tauri + React/TS + Python/FastAPI
 > + SQLite). Plan.docx is the source of truth; PROJECT_HANDOFF.md records the current state, decisions,
 > environment, commands and working agreement. The source snapshot has the code written so far. Read both
-> documents first. Phase 0 is complete; Phase 1.1 (node contract, registry, validation) and 1.2 (runner, events, timeouts,
-> cancellation) are delivered, and I will confirm they pass on my machine. Continue with Phase 1.3 (SQLite
-> persistence) following section 11 of the handoff.
+> documents first. Phase 0 is complete; Phase 1.1 (node contract, registry, validation), 1.2 (runner, events, timeouts,
+> cancellation) and 1.3 (SQLite persistence, restart safety) are delivered, and I will confirm they pass on my
+> machine. The repo is going on GitHub: give me a git commit plan with every step and keep .gitignore current.
+> Continue with Phase 1.4 (local API and CLI) following section 11 of the handoff.
 > Work in small tested steps, give exact PowerShell commands, update the changelog and bump the version, and
 > tell me honestly what you could and could not verify. I know Python and React but not Rust.

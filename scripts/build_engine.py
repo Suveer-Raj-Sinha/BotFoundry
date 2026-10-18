@@ -27,6 +27,7 @@ EXT = ".exe" if os.name == "nt" else ""
 
 sys.path.insert(0, str(ENGINE))
 from botfoundry import __version__  # noqa: E402
+from botfoundry.storage.migrations import MIGRATIONS  # noqa: E402
 
 
 def host_triple() -> str:
@@ -87,10 +88,11 @@ def smoke_test(exe: Path) -> None:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     token = secrets.token_hex(16)
+    data_dir = Path(tempfile.mkdtemp(prefix="botfoundry-smoke-"))
     log = tempfile.NamedTemporaryFile("w+", suffix=".log", delete=False)
     started = time.time()
     proc = subprocess.Popen(
-        [str(exe), "--port", str(port), "--parent-pid", str(os.getpid())],
+        [str(exe), "--port", str(port), "--data-dir", str(data_dir), "--parent-pid", str(os.getpid())],
         env={**os.environ, "BOTFOUNDRY_TOKEN": token},
         stdout=log, stderr=subprocess.STDOUT,
     )
@@ -113,13 +115,17 @@ def smoke_test(exe: Path) -> None:
             raise SystemExit(f"Smoke test FAILED: no healthy response.\n--- engine output ---\n{log.read()[-2000:]}")
         if f'"engine_version":"{__version__}"' not in body:
             raise SystemExit(f"Smoke test FAILED: unexpected version in {body}")
+        if f'"database_schema_version":{MIGRATIONS[-1].version}' not in body:
+            raise SystemExit(f"Smoke test FAILED: database not ready in {body}")
         bad_status, _ = http_get(url, "wrong-token")
         if bad_status != 401:
             raise SystemExit(f"Smoke test FAILED: wrong token returned {bad_status}, expected 401")
-        print(f"      OK: healthy after {elapsed:.1f}s, version {__version__}, wrong token -> 401")
+        print(f"      OK: healthy after {elapsed:.1f}s, version {__version__}, database schema "
+              f"v{MIGRATIONS[-1].version}, wrong token -> 401")
     finally:
         stop(proc)
         log.close()
+        shutil.rmtree(data_dir, ignore_errors=True)
 
 
 def stage(exe: Path) -> Path:

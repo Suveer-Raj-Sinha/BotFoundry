@@ -1,12 +1,57 @@
+# ===== BotFoundry .gitignore =====
+# Rule of thumb: commit source, config and docs. Never commit secrets, databases, logs,
+# build output, installed dependencies, or the frozen engine binary.
+
+# --- Python (engine) ---
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- PyInstaller output (scripts/build_engine.py) ---
+engine/build/
+apps/desktop/src-tauri/binaries/
+
+# --- Node / frontend ---
 node_modules/
 dist/
-target/
-*.db
-.pytest_cache/
-.env
-*.egg-info/
+.vite/
+*.tsbuildinfo
+coverage/
+npm-debug.log*
+yarn-error.log*
 
+# --- Rust / Tauri ---
+target/
+apps/desktop/src-tauri/gen/schemas/
+
+# --- BotFoundry runtime data (databases and logs live on the user's machine, not in git) ---
+.data/
+engine/.data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+
+# --- Secrets and local configuration ---
+.env
+.env.*
+!.env.example
 *.local
+
+# --- Editors and operating systems ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

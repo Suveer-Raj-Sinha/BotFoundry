@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.6.0] - 2026-10-18
+
+### Added
+- SQLite persistence, Phase 1.3 (`botfoundry/storage/`; see `docs/persistence.md`):
+  - Thread-safe database wrapper (WAL, foreign keys, explicit all-or-nothing transactions).
+  - Ordered, append-only migrations, applied atomically. A database from a newer BotFoundry is
+    refused with a clear message instead of being modified.
+  - Repository: save/load/list/delete workflows; list and get runs (with per-node results); events read
+    with a cursor; the exact workflow snapshot each run executed.
+  - `RunPersister` / `Storage.attach(run)`: writes every event and the state it implies as it happens.
+    Database failures never break a run; they are logged and recorded in `persister.errors`.
+  - Restart safety: at start-up, runs left unfinished by a crash are failed with `run.interrupted`
+    (nodes: `node.interrupted`, or skipped) and are never resumed, so work is never executed twice.
+- `--data-dir` option and `default_data_dir()` (`%LOCALAPPDATA%\BotFoundry` on Windows).
+- `/health` now reports `database_schema_version`.
+- A database that cannot be opened stops start-up with a clear message and exit code 2; the file is left untouched.
+- 35 new tests (128 total). Persistence logic was mutation-checked (seven deliberate breakages, all caught).
+
+### Changed
+- `scripts/build_engine.py` smoke test now also starts the frozen engine with a temporary data folder
+  and checks the database is ready.
+
 ## [0.5.0] - 2026-10-16
 
 ### Added

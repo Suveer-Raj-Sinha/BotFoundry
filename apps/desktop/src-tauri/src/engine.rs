@@ -5,7 +5,7 @@
 //! Release builds: run the frozen `botfoundry-engine` sidecar that Tauri places next to the app
 //! executable, with output going to `engine.log` in the app's local data folder.
 //!
-//! Either way: a random free loopback port, a random per-launch token, `--parent-pid` so the
+//! Either way: a random free loopback port, a data folder for the database (`--data-dir`), a random per-launch token, `--parent-pid` so the
 //! engine stops itself if this app dies, and the whole process tree is killed on exit.
 
 use std::net::TcpListener;
@@ -67,6 +67,8 @@ struct EngineCommand {
     program: PathBuf,
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    /// Where the engine keeps its database. Debug: `engine/.data` (git-ignored). Release: the app's data folder.
+    data_dir: Option<PathBuf>,
 }
 
 #[cfg(debug_assertions)]
@@ -89,10 +91,12 @@ fn engine_command() -> Result<EngineCommand, String> {
             python.display()
         ));
     }
+    let data_dir = engine_dir.join(".data");
     Ok(EngineCommand {
         program: python,
         args: vec!["-m".into(), "botfoundry".into()],
         cwd: Some(engine_dir),
+        data_dir: Some(data_dir),
     })
 }
 
@@ -109,7 +113,7 @@ fn engine_command() -> Result<EngineCommand, String> {
             program.display()
         ));
     }
-    Ok(EngineCommand { program, args: Vec::new(), cwd: None })
+    Ok(EngineCommand { program, args: Vec::new(), cwd: None, data_dir: None })
 }
 
 #[cfg(debug_assertions)]
@@ -163,6 +167,10 @@ fn try_start(log_dir: Option<&Path>) -> Result<(EngineInfo, Child), String> {
         .stdin(Stdio::null());
     if let Some(cwd) = &engine.cwd {
         command.current_dir(cwd);
+    }
+    // Release builds keep the database next to engine.log in the app's data folder.
+    if let Some(dir) = engine.data_dir.clone().or_else(|| log_dir.map(Path::to_path_buf)) {
+        command.arg("--data-dir").arg(dir);
     }
     configure_output(&mut command, log_dir)?;
     hide_console(&mut command);

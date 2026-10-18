@@ -5,6 +5,15 @@ Tauri + React + TypeScript desktop app. The version must match in three files:
 Change it with `python scripts/bump.py app X.Y.Z` from the repo root.
 Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATCH until 1.0.
 
+## [0.5.0] - 2026-10-18
+
+### Added
+- The Rust launcher passes `--data-dir` to the engine: `engine/.data` in development (git-ignored) and the
+  app's local data folder (next to `engine.log`) in packaged builds. Run history now lives there.
+
+### Notes
+- The user interface is unchanged in this release.
+
 ## [0.4.0] - 2026-10-16
 
 ### Added
