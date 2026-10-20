@@ -1,0 +1,101 @@
+"""Request and response models (the source of truth for the future TypeScript types)."""
+from typing import Any
+
+from pydantic import BaseModel, Field, model_validator
+
+from ..workflow.events import RunEvent
+from ..workflow.validation import ValidationResult
+
+
+class ErrorDetail(BaseModel):
+    code: str
+    message: str
+    details: Any = None
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorDetail
+
+
+class NodeCatalog(BaseModel):
+    nodes: list[dict[str, Any]]
+
+
+class WorkflowSummary(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    node_count: int
+    created_at: str
+    updated_at: str
+
+
+class WorkflowList(BaseModel):
+    workflows: list[WorkflowSummary]
+
+
+class WorkflowSaved(BaseModel):
+    workflow: WorkflowSummary
+    validation: ValidationResult
+
+
+class Deleted(BaseModel):
+    deleted: bool
+
+
+class RunStart(BaseModel):
+    """Start a run from a saved workflow (`workflow_id`) or an inline `definition`; exactly one."""
+    workflow_id: str | None = None
+    definition: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "RunStart":
+        if (self.workflow_id is None) == (self.definition is None):
+            raise ValueError("provide exactly one of 'workflow_id' or 'definition'")
+        return self
+
+
+class NodeRunOut(BaseModel):
+    node_id: str
+    type: str
+    status: str
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    summary: str = ""
+    error: dict[str, Any] | None = None
+    reason: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+class RunSummaryOut(BaseModel):
+    run_id: str
+    workflow_id: str
+    workflow_name: str
+    status: str
+    error: dict[str, Any] | None = None
+    rulebook_version: int | None = None
+    created_at: str
+    finished_at: str | None = None
+
+
+class RunDetailOut(RunSummaryOut):
+    nodes: list[NodeRunOut]
+    active: bool
+    persistence_errors: list[str] = Field(default_factory=list)  # non-empty = history may be incomplete
+
+
+class RunList(BaseModel):
+    runs: list[RunSummaryOut]
+
+
+class EventsPage(BaseModel):
+    events: list[RunEvent]
+    next_after: int  # pass as ?after= to get the next page
+    has_more: bool  # more events are already stored beyond this page
+    run_status: str
+    finished: bool  # the run reached a terminal state (when also has_more is false, polling can stop)
+
+
+class CancelOut(BaseModel):
+    run_id: str
+    cancel_requested: bool
