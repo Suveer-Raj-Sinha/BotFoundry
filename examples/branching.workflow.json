@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "branching",
+  "name": "Branching example",
+  "description": "Counts the fields in the payload; only the matching branch runs, the other is skipped.",
+  "nodes": [
+    {"id": "start", "type": "core.manual_trigger", "config": {"payload": {"a": 1, "b": 2, "c": 3}}},
+    {"id": "count", "type": "core.transform", "config": {"operation": "length"}},
+    {"id": "big", "type": "core.condition", "config": {"operator": "greater_than", "compare_to": 2}},
+    {"id": "many", "type": "core.transform", "config": {"operation": "to_string"}},
+    {"id": "few", "type": "core.transform", "config": {"operation": "to_string"}}
+  ],
+  "edges": [
+    {"source": "start", "source_port": "payload", "target": "count", "target_port": "value"},
+    {"source": "count", "source_port": "result", "target": "big", "target_port": "value"},
+    {"source": "big", "source_port": "true", "target": "many", "target_port": "value"},
+    {"source": "big", "source_port": "false", "target": "few", "target_port": "value"}
+  ]
+}

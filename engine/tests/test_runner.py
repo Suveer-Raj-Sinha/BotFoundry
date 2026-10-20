@@ -429,3 +429,24 @@ def test_snapshot_is_json_friendly(registry):
     run = execute(wf([TRIGGER, N("x", "test.echo")], [FROM_START]), registry)
     data = json.loads(json.dumps(run.snapshot()))
     assert data["status"] == "completed" and data["nodes"]["x"]["status"] == "completed"
+
+
+# ---- core.wait ----------------------------------------------------------------------------
+def test_wait_node_passes_the_value_through_and_reports_progress(registry):
+    definition = wf([TRIGGER, N("w", "core.wait", seconds=0.3)], [E("start", "payload", "w")])
+    run = execute(definition, registry)
+    assert run.status == RunStatus.COMPLETED
+    assert run.nodes["w"].outputs == {"result": {"name": "bot"}}
+    progress = [e.payload["fraction"] for e in run.events.all() if e.type == EventType.NODE_PROGRESS]
+    assert progress and progress == sorted(progress) and 0 <= progress[0] <= progress[-1] < 1
+
+
+def test_wait_node_is_cancellable_and_bounded(registry):
+    definition = wf([TRIGGER, N("w", "core.wait", seconds=30)], [E("start", "payload", "w")])
+    run = Run(definition, registry)
+    t0 = time.monotonic()
+    asyncio.run(_cancel_when_started(run, "w"))
+    assert run.status == RunStatus.CANCELLED and time.monotonic() - t0 < 3
+    for bad in (-1, 61):
+        too_long = wf([TRIGGER, N("w", "core.wait", seconds=bad)], [E("start", "payload", "w")])
+        assert execute(too_long, registry).error["code"] == "validation_failed"

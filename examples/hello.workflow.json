@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "hello",
+  "name": "Hello workflow",
+  "description": "Starts with a payload, turns it into text, then upper-cases it.",
+  "nodes": [
+    {"id": "start", "type": "core.manual_trigger", "config": {"payload": {"greeting": "hello"}}},
+    {"id": "as_text", "type": "core.transform", "config": {"operation": "to_string"}},
+    {"id": "shout", "type": "core.transform", "config": {"operation": "to_upper"}}
+  ],
+  "edges": [
+    {"source": "start", "source_port": "payload", "target": "as_text", "target_port": "value"},
+    {"source": "as_text", "source_port": "result", "target": "shout", "target_port": "value"}
+  ]
+}

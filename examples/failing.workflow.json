@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "failing",
+  "name": "Failing example",
+  "description": "Valid, but fails at run time (compares an object with a number). Shows honest failure reporting.",
+  "nodes": [
+    {"id": "start", "type": "core.manual_trigger", "config": {"payload": {"a": 1}}},
+    {"id": "compare", "type": "core.condition", "config": {"operator": "greater_than", "compare_to": 3}},
+    {"id": "never_runs", "type": "core.transform", "config": {"operation": "to_string"}}
+  ],
+  "edges": [
+    {"source": "start", "source_port": "payload", "target": "compare", "target_port": "value"},
+    {"source": "compare", "source_port": "true", "target": "never_runs", "target_port": "value"}
+  ]
+}
