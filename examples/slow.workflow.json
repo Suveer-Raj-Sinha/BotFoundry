@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "slow",
+  "name": "Slow example",
+  "description": "Waits 20 seconds with progress events. Try cancelling it (Ctrl+C in the CLI).",
+  "nodes": [
+    {"id": "start", "type": "core.manual_trigger", "config": {"payload": {"note": "wait for it"}}},
+    {"id": "pause", "type": "core.wait", "config": {"seconds": 20}},
+    {"id": "after", "type": "core.transform", "config": {"operation": "to_string"}}
+  ],
+  "edges": [
+    {"source": "start", "source_port": "payload", "target": "pause", "target_port": "value"},
+    {"source": "pause", "source_port": "result", "target": "after", "target_port": "value"}
+  ]
+}

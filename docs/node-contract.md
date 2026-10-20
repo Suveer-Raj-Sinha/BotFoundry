@@ -1,6 +1,6 @@
 # Node contract and workflow format
 
-Status: engine 0.5.0 (Phase 1.1 and 1.2). Code: `engine/botfoundry/workflow/`.
+Status: engine 0.7.0 (Phase 1.1 to 1.4). Code: `engine/botfoundry/workflow/`.
 
 ## A node (a registered, typed operation)
 Every node type is a `NodeSpec` that defines:
@@ -84,3 +84,11 @@ Each event: `id` (1, 2, 3... per run), `run_id`, `type`, `timestamp` (UTC), `nod
 | `approval_requested/granted/denied` | reserved for Phase 2 |
 
 Exactly one of `run_completed`, `run_failed`, `run_cancelled` ends every run. Poll with `events.since(last_id)`.
+
+## Built-in nodes
+| Id | Category | Ports | Config |
+|---|---|---|---|
+| `core.manual_trigger` | trigger | out `payload` (object) | `payload` |
+| `core.condition` | logic | in `value`; out `true`, `false` (only one is active) | `operator`, `compare_to` |
+| `core.transform` | data | in `value`; out `result` | `operation`: to_upper, to_lower, length, to_string |
+| `core.wait` | logic | in `value`; out `result` (same value) | `seconds` 0 to 60 (default 1) |

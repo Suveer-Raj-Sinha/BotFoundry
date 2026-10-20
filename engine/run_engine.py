@@ -1,5 +1,7 @@
 """Entry point used when the engine is frozen into a single executable (PyInstaller)."""
-from botfoundry.__main__ import main
+import sys
+
+from botfoundry.cli import main
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())  # keep the exit code: the desktop app and the build script rely on it

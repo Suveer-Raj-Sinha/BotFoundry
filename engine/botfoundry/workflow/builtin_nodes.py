@@ -1,5 +1,6 @@
 """The first small set of built-in nodes. They exist to prove the node contract; the file and
 Fixer nodes arrive in later phases."""
+import asyncio
 import json
 from typing import Any, Literal
 
@@ -105,7 +106,33 @@ TRANSFORM = NodeSpec(
     handler=_transform, timeout_seconds=5,
 )
 
-BUILTIN_NODES = (MANUAL_TRIGGER, CONDITION, TRANSFORM)
+# ---- core.wait ----------------------------------------------------------------------------
+class WaitConfig(BaseModel):
+    seconds: float = Field(default=1.0, ge=0, le=60)
+
+
+async def _wait(ctx: NodeContext, config: WaitConfig, inputs: dict[str, Any]) -> NodeResult:
+    loop = asyncio.get_running_loop()
+    end = loop.time() + config.seconds
+    while True:
+        ctx.cancel.raise_if_cancelled()
+        left = end - loop.time()
+        if left <= 0:
+            break
+        ctx.report_progress(1 - left / config.seconds, f"{left:.1f}s left")
+        await asyncio.sleep(min(0.25, left))
+    return NodeResult(outputs={"result": inputs["value"]}, summary=f"Waited {config.seconds:g}s")
+
+
+WAIT = NodeSpec(
+    id="core.wait", version=1, title="Wait",
+    description="Pauses for a number of seconds (0 to 60), reporting progress, then passes the value through.",
+    category=Category.LOGIC, config_model=WaitConfig,
+    inputs=(PortSpec(name="value"),), outputs=(PortSpec(name="result"),),
+    handler=_wait, timeout_seconds=90,
+)
+
+BUILTIN_NODES = (MANUAL_TRIGGER, CONDITION, TRANSFORM, WAIT)
 
 
 def build_default_registry() -> NodeRegistry:

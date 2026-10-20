@@ -5,6 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.7.0] - 2026-10-18
+
+### Added
+- Local API, Phase 1.4 (`docs/api.md`): `GET /nodes`; `POST /workflows/validate`; workflow list, get, save
+  (`PUT`) and delete; `POST /runs` (saved workflow or inline definition; validates first, answers 202 and runs
+  in the background); run list and detail; `GET /runs/{id}/events` with a cursor; `POST /runs/{id}/cancel`.
+  All behind the token. Starting is refused for invalid workflows (422 with the issues, no run created), when
+  8 runs are already active (429), or when the database cannot record the run (500, nothing started).
+- Run manager (`run_manager.py`): background runs, cancel by id, history problems exposed as
+  `persistence_errors`, and on engine shutdown every active run is cancelled and recorded promptly.
+- Command line (`cli.py`): `nodes`, `validate`, `run` (live events, `--json`, `--no-save`, Ctrl+C cancels and
+  records, exit codes 0/1/2/130) alongside the unchanged default start-up used by the desktop app.
+- `core.wait` node: pauses 0 to 60 s with progress events; cancellable.
+- `examples/`: hello, branching, failing and slow workflows (tested).
+- 61 new tests (189 total). Nine deliberate breakages of the API, run manager and CLI were checked; two
+  initially slipped through, which led to stronger tests for prompt shutdown and for never echoing submitted values.
+
+### Changed
+- **Error format:** all API errors, including 401, are now `{"error": {"code", "message", "details"}}` instead
+  of `{"detail": ...}`. Status codes are unchanged.
+- `create_app(settings, storage=None, registry=None)`; the desktop app's launch arguments are unchanged.
+- `scripts/build_engine.py` smoke test now runs a workflow end to end through the frozen executable.
+- `run_engine.py` passes the exit code through (the packaged engine now reports failures correctly).
+
+### Notes
+- Run only one engine per data folder; there is no lock yet. The CLI `run` command never performs crash
+  recovery, so it cannot interfere with a live engine.
+
 ## [0.6.0] - 2026-10-18
 
 ### Added
