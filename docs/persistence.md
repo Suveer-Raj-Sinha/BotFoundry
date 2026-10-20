@@ -42,3 +42,8 @@ final `run_failed` event is appended. Runs are never resumed, so work is never e
 - Node outputs are stored as JSON; unusual values are stored as text (`default=str`).
 - Large outputs (for example file lists from the Fixer) are not size-capped yet.
 - One connection with a lock: right for a single-user local app, not for a server.
+
+## Several processes
+Only the engine (`serve`) performs crash recovery at start-up. `botfoundry run` opens the same database
+without recovery, so it can never mark another process's active runs as interrupted. Do not start two
+engines on the same data folder (no lock yet).

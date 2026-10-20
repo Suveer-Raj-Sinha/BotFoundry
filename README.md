@@ -6,9 +6,10 @@ BotFoundry is a local-first Windows desktop automation platform. You build bots 
 workflows, give each bot a Rulebook that controls what it may touch, and watch every action run on your
 own machine. No cloud account, no telemetry; AI is optional and never required.
 
-> **Status: early development.** The foundation is built and tested: a secure local engine, a desktop
-> shell, a workflow core (validation, execution, events) and SQLite persistence. The workflow editor,
-> the Rulebook and the first real bot (The Fixer, a file organizer) are next. See the roadmap.
+> **Status: early development.** The engine core is complete and tested: a secure local engine with an HTTP
+> API and a CLI, a workflow core (validation, execution, events) and SQLite persistence, inside a desktop
+> shell. The Rulebook, the first real bot (The Fixer, a file organizer) and the workflow editor are next.
+> See the roadmap.
 
 ## What works today
 - **Desktop app** (Tauri 2 + React + TypeScript) that starts its own engine and shows live engine status.
@@ -18,8 +19,10 @@ own machine. No cloud account, no telemetry; AI is optional and never required.
   error codes, and a runner with branching, timeouts, cancellation and a structured event log.
 - **Persistence:** SQLite with migrations; runs, node results and events survive restarts, and
   interrupted runs are failed, never resumed (no duplicate execution).
+- **Local API and CLI:** validate, save and run workflows, follow a run's events, cancel it, browse history
+  (`docs/api.md`); `python -m botfoundry run examples/hello.workflow.json` runs one from the terminal.
 - **Packaging:** the engine is frozen into one executable and bundled as a Tauri sidecar.
-- 128 engine tests, 6 frontend tests; every release has a changelog.
+- 189 engine tests, 6 frontend tests; every release has a changelog.
 
 ## Architecture
 ```
@@ -57,15 +60,24 @@ npm run tauri build -- --no-bundle --config src-tauri/tauri.release.conf.json
 engine/      Python engine: API, workflow core (node contract, validation, runner, events), storage
 apps/desktop Tauri + React desktop app
 scripts/     bump.py (versions + changelogs), build_engine.py (freeze + smoke-test the engine)
-docs/        node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
+examples/    ready-to-run workflow files
+docs/        api.md, node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
 ```
 
 ## Roadmap
-1. **Engine core** (in progress): node contract, validation, runner, events, persistence, then the local API and CLI.
+1. **Engine core** (done): node contract, validation, runner, events, persistence, local API and CLI.
 2. **Rulebook:** per-bot permissions, approved folders, action policies, approval gates, enforced by the engine.
 3. **The Fixer:** scan, hash, find duplicates, preview, approve, move safely, recover and undo.
 4. **Interface:** workflow canvas, live run view, history.
 5. Polish, scheduling, installer; then The Builder, optional local AI, templates.
+
+## Try it
+```powershell
+cd engine
+.\.venv\Scripts\python.exe -m botfoundry nodes
+.\.venv\Scripts\python.exe -m botfoundry validate ..\examples\branching.workflow.json
+.\.venv\Scripts\python.exe -m botfoundry run ..\examples\branching.workflow.json --no-save
+```
 
 ## Versions
 The engine and the app are versioned separately (`engine/CHANGELOG.md`, `apps/desktop/CHANGELOG.md`).
