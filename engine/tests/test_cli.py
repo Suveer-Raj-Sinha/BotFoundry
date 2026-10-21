@@ -156,6 +156,10 @@ def test_ctrl_c_cancels_a_running_workflow_and_records_it(tmp_path):
     saved = storage.list_runs()[0]
     assert saved["status"] == "cancelled"
     assert storage.get_events(saved["run_id"])[-1].type == EventType.RUN_CANCELLED
+    nodes = {n["node_id"]: n["status"] for n in storage.get_run(saved["run_id"])["nodes"]}
+    assert nodes == {"start": "completed", "pause": "cancelled", "after": "cancelled"}   # never "running"
+    summary = [line.split() for line in rest.splitlines() if line.startswith("  ")]
+    assert ["pause", "cancelled"] == next(parts for parts in summary if parts[0] == "pause")[:2]
     storage.close()
 
 

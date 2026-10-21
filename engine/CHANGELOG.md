@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.7.1] - 2026-10-20
+
+### Fixed
+- A run cancelled from outside (Ctrl+C in the CLI, or the forced-shutdown fallback) left the node that was
+  running marked `running` in its final state, in memory and in the saved history, although the run itself was
+  correctly `cancelled`. Found by running the CLI on Windows. That node is now `cancelled` with the reason
+  "Cancelled while running", and the `run_cancelled` event names it in `running_node`. The API cancel route was
+  not affected.
+- Defensive invariant: when any run ends, a node can no longer be left `running`. If the engine itself fails
+  mid-node, that node is recorded as failed with code `node.aborted`.
+
+### Tests
+- 3 new tests (192 total): cancellation by task, persisted state and the CLI Ctrl+C test now check every
+  node's status, not only the run's. A test checks that no finished run leaves a node running or pending.
+  Reverting the fix makes five of them fail.
+
 ## [0.7.0] - 2026-10-18
 
 ### Added

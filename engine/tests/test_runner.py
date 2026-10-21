@@ -396,6 +396,10 @@ def test_cancelling_the_asyncio_task_leaves_a_terminal_state(registry):
     asyncio.run(main())
     assert run.status == RunStatus.CANCELLED
     assert FLAGS.get("slow.interrupted") is True
+    # the node that was running must be recorded as cancelled, never left "running"
+    assert statuses(run) == {"start": NodeStatus.COMPLETED, "slow": NodeStatus.CANCELLED}
+    assert run.nodes["slow"].reason == "Cancelled while running." and run.nodes["slow"].finished_at is not None
+    assert run.events.all()[-1].payload["running_node"] == "slow"
 
 
 # ---- progress and listeners ---------------------------------------------------------------
@@ -450,3 +454,54 @@ def test_wait_node_is_cancellable_and_bounded(registry):
     for bad in (-1, 61):
         too_long = wf([TRIGGER, N("w", "core.wait", seconds=bad)], [E("start", "payload", "w")])
         assert execute(too_long, registry).error["code"] == "validation_failed"
+
+
+def test_a_finished_run_never_leaves_a_node_running(registry):
+    """Whatever way a run ends, no node may still be marked running, and a run that passed validation
+    has no node left pending."""
+    scenarios = {
+        "completed": wf([TRIGGER, N("x", "test.echo")], [FROM_START]),
+        "failed": wf([TRIGGER, N("x", "test.fail"), N("y", "test.echo")],
+                     [FROM_START, E("x", "result", "y")]),
+        "timeout": wf([TRIGGER, N("x", "test.slow", seconds=5)], [FROM_START]),
+        "unexpected_error": wf([TRIGGER, N("x", "test.boom")], [FROM_START]),
+    }
+    for name, definition in scenarios.items():
+        run = execute(definition, registry)
+        leftovers = {k: v for k, v in statuses(run).items() if v in (NodeStatus.RUNNING, NodeStatus.PENDING)}
+        assert leftovers == {}, f"{name}: {leftovers}"
+    for how in ("api_cancel", "task_cancel"):
+        run = Run(wf([TRIGGER, N("slow", "test.slow_long", seconds=10), N("after", "test.echo")],
+                     [E("start", "payload", "slow"), E("slow", "result", "after")]), registry)
+
+        async def main():
+            task = asyncio.ensure_future(run.execute())
+            while run.nodes["slow"].status != NodeStatus.RUNNING:
+                await asyncio.sleep(0.01)
+            if how == "api_cancel":
+                run.cancel()
+                await task
+            else:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(main())
+        leftovers = {k: v for k, v in statuses(run).items() if v in (NodeStatus.RUNNING, NodeStatus.PENDING)}
+        assert leftovers == {}, f"{how}: {leftovers}"
+        assert run.nodes["slow"].status == NodeStatus.CANCELLED
+
+
+def test_a_run_that_breaks_internally_does_not_leave_a_node_running(registry, monkeypatch):
+    run = Run(wf([TRIGGER, N("x", "test.echo")], [FROM_START]), registry)
+    original_start = Run._start
+
+    def patched(self, record, node):          # simulate a bug in the engine itself, hit as a node starts
+        original_start(self, record, node)
+        if node.id == "x":
+            raise RuntimeError("engine bug")
+
+    monkeypatch.setattr(Run, "_start", patched)
+    asyncio.run(run.execute())
+    assert run.status == RunStatus.FAILED and run.error["code"] == "run.internal_error"
+    assert statuses(run)["x"] == NodeStatus.FAILED and run.nodes["x"].error["code"] == "node.aborted"

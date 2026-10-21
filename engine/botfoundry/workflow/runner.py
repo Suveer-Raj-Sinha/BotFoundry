@@ -247,6 +247,13 @@ class Run:
                 self._stop_after_failure(order, position, node.id)
                 return
             except asyncio.CancelledError:
+                # The whole run task was cancelled from outside (Ctrl+C in the CLI, forced shutdown).
+                # Record the node that was running before letting the cancellation continue.
+                record.status = NodeStatus.CANCELLED
+                record.finished_at = _now()
+                record.reason = "Cancelled while running."
+                self._finish_cancelled("The run's task was cancelled.", [n.id for n in order[position + 1:]],
+                                       running_node=node.id)
                 raise
             except Exception as exc:
                 log.exception("Node %s raised an unexpected exception", node.id)
@@ -358,7 +365,19 @@ class Run:
             "completed": counts.count(NodeStatus.COMPLETED), "skipped": counts.count(NodeStatus.SKIPPED),
             "duration_ms": self._duration_ms()})
 
+    def _settle_running_nodes(self, status: NodeStatus, reason: str, error: dict[str, Any] | None = None) -> None:
+        """Invariant: when a run ends, no node may still be marked running."""
+        for record in self.nodes.values():
+            if record.status == NodeStatus.RUNNING:
+                record.status = status
+                record.reason = reason
+                record.error = error
+                record.finished_at = _now()
+
     def _finish_failed(self, error: dict[str, Any], failed_node: str | None) -> None:
+        self._settle_running_nodes(NodeStatus.FAILED, "The run ended while this node was running.",
+                                   {"code": "node.aborted", "details": {},
+                                    "message": "The run ended while this node was running."})
         self.status = RunStatus.FAILED
         self.error = error
         self.finished_at = _now()
@@ -366,6 +385,7 @@ class Run:
             "error": error, "failed_node": failed_node, "duration_ms": self._duration_ms()})
 
     def _finish_cancelled(self, reason: str, unstarted: list[str] | None = None, running_node: str | None = None) -> None:
+        self._settle_running_nodes(NodeStatus.CANCELLED, "Cancelled while running.")
         cancelled = []
         for node_id in unstarted if unstarted is not None else list(self.nodes):
             record = self.nodes[node_id]
