@@ -298,3 +298,24 @@ def test_open_reports_a_corrupt_database(tmp_path):
     path.write_bytes(b"garbage" * 100)
     with pytest.raises(StorageError):
         Storage.open(path)
+
+
+def test_task_cancellation_is_persisted_with_the_running_node_cancelled(storage, registry):
+    definition = wf([TRIGGER, {"id": "slow", "type": "test.slow", "config": {"seconds": 10}}],
+                    [{"source": "start", "source_port": "payload", "target": "slow", "target_port": "value"}])
+    run = Run(definition, registry)
+    storage.attach(run)
+
+    async def main():
+        task = asyncio.ensure_future(run.execute())
+        while run.nodes["slow"].status != NodeStatus.RUNNING:
+            await asyncio.sleep(0.01)
+        task.cancel()                                   # what Ctrl+C does to the CLI's run
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    saved = storage.get_run(run.run_id)
+    assert saved["status"] == "cancelled"
+    assert {n["node_id"]: n["status"] for n in saved["nodes"]} == {"start": "completed", "slow": "cancelled"}
+    assert storage.get_events(run.run_id)[-1].payload["running_node"] == "slow"
