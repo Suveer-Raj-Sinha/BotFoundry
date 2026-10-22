@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from botfoundry.storage.migrations import MIGRATIONS
 from botfoundry.config import DATABASE_FILE
 from botfoundry.storage import Storage
 from botfoundry.workflow.builtin_nodes import build_default_registry
@@ -187,7 +188,7 @@ def test_serve_still_starts_with_the_original_arguments(tmp_path):
             except (urllib.error.URLError, ConnectionError, OSError):
                 time.sleep(0.2)
         assert body is not None, "engine did not start"
-        assert body["status"] == "ok" and body["database_schema_version"] == 1
+        assert body["status"] == "ok" and body["database_schema_version"] == MIGRATIONS[-1].version
         request = urllib.request.Request(f"http://127.0.0.1:{port}/nodes", headers={"X-BotFoundry-Token": TOKEN})
         with urllib.request.urlopen(request, timeout=2) as response:
             assert len(json.loads(response.read())["nodes"]) == 4
@@ -214,3 +215,31 @@ def test_serve_with_an_unreadable_database_exits_cleanly(tmp_path):
 def test_top_level_help_lists_the_commands():
     out = cli("--help")
     assert out.returncode == 0 and all(word in out.stdout for word in ("serve", "validate", "run", "nodes"))
+
+
+# ---- rulebook commands --------------------------------------------------------------------
+def test_rulebook_validate_and_check(tmp_path):
+    rulebook = write(tmp_path, "r.json", {"bot_id": "fixer", "name": "Fixer", "limits": {"max_files_per_run": 5},
+                                          "permissions": {"git.read": "allow", "process.run_tests": "ask"}})
+    assert cli("rulebook", "validate", rulebook).returncode == 0
+    allowed = cli("rulebook", "check", rulebook, "git.read")
+    assert allowed.returncode == 0 and allowed.stdout.startswith("ALLOW")
+    asked = cli("rulebook", "check", rulebook, "process.run_tests")
+    assert asked.returncode == 3 and asked.stdout.startswith("ASK")
+    denied = cli("rulebook", "check", rulebook, "fs.delete")
+    assert denied.returncode == 1 and "system.limit" in denied.stdout
+    absolute_here = "C:\\nowhere\\x" if os.name == "nt" else "/nowhere/x"      # absolute on this OS, but not approved
+    outside = cli("rulebook", "check", rulebook, "git.read", absolute_here)
+    assert outside.returncode == 1 and "path.outside_allowed" in outside.stdout
+    relative = cli("rulebook", "check", rulebook, "git.read", "nowhere/x")           # relative on every OS
+    assert relative.returncode == 1 and "path.not_absolute" in relative.stdout
+    assert json.loads(cli("rulebook", "check", rulebook, "git.read", "--json").stdout)["outcome"] == "allow"
+
+
+def test_rulebook_validate_reports_errors(tmp_path):
+    bad = write(tmp_path, "bad.json", {"bot_id": "fixer", "name": "Fixer", "permissions": {"fs.delete": "allow", "fs.typo": "allow"}})
+    out = cli("rulebook", "validate", bad)
+    assert out.returncode == 1 and "rulebook.exceeds_system_limit" in out.stdout and "rulebook.unknown_permission" in out.stdout
+    refused = cli("rulebook", "check", bad, "fs.read")
+    assert refused.returncode == 1 and "fix them" in refused.stderr
+    assert cli("rulebook", "validate", tmp_path / "missing.json").returncode == 2

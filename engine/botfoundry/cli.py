@@ -5,8 +5,11 @@
     botfoundry nodes [--json]                                list the node types
     botfoundry validate FILE [--json]                        check a workflow file
     botfoundry run FILE [--data-dir D] [--no-save] [--json]  run a workflow file, printing events live
+    botfoundry rulebook validate FILE [--json]               check a Rulebook file
+    botfoundry rulebook check FILE PERMISSION [PATH ...]     ask what the Rulebook would decide
 
-Exit codes:  0 ok / completed   1 invalid or failed   2 usage or environment problem   130 cancelled
+Exit codes:  0 ok / completed / allowed   1 invalid, failed or denied   2 usage or environment problem
+             3 needs approval (rulebook check)   130 cancelled
 """
 import argparse
 import asyncio
@@ -52,6 +55,7 @@ def cmd_serve(argv: list[str]) -> int:
     import uvicorn
 
     from .api.app import create_app
+    from .rules.constraints import default_constraints
     from .lifecycle import watch_parent
     from .startup import open_storage
     from .storage import StorageError
@@ -79,7 +83,7 @@ def cmd_serve(argv: list[str]) -> int:
     print(f"Database ready in {data_dir} (schema v{storage.schema_version}); "
           f"{len(interrupted)} interrupted run(s) recovered.", flush=True)
 
-    app = create_app(settings, storage)
+    app = create_app(settings, storage, constraints=default_constraints(data_dir))
     # Always loopback. Never bind 0.0.0.0.
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, log_level="info"))
 
@@ -216,8 +220,56 @@ def cmd_run(argv: list[str]) -> int:
     return EXIT_OK if run.status == RunStatus.COMPLETED else EXIT_FAILED
 
 
+# ---- rulebook ------------------------------------------------------------------------------
+def cmd_rulebook(argv: list[str]) -> int:
+    from .rules.constraints import default_constraints
+    from .rules.evaluate import evaluate_action
+    from .rules.permissions import Policy, known_permission_names
+    from .rules.validation import parse_and_validate_rulebook
+
+    parser = argparse.ArgumentParser(prog="botfoundry rulebook", description="Work with Rulebook files.")
+    actions = parser.add_subparsers(dest="action", required=True)
+    validate = actions.add_parser("validate", help="Check a Rulebook file.")
+    validate.add_argument("file", type=Path)
+    validate.add_argument("--json", action="store_true")
+    check = actions.add_parser("check", help="Ask what the engine would decide for a permission and paths.")
+    check.add_argument("file", type=Path)
+    check.add_argument("permission")
+    check.add_argument("paths", nargs="*")
+    check.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    registry = build_default_registry()
+    known = known_permission_names(p for spec in registry.all() for p in spec.permissions)
+    constraints = default_constraints()
+    rulebook, result = parse_and_validate_rulebook(_load_json(args.file), constraints, known)
+
+    if args.action == "validate":
+        if args.json:
+            print(result.model_dump_json(indent=2))
+        elif result.issues:
+            print(f"{args.file}: {len(result.errors)} error(s), {len(result.warnings)} warning(s)")
+            _print_issues(result)
+        else:
+            print(f"{args.file}: valid")
+        return EXIT_OK if result.ok else EXIT_FAILED
+
+    if rulebook is None or not result.ok:
+        print(f"{args.file} has errors; fix them before checking an action:", file=sys.stderr)
+        _print_issues(result, sys.stderr)
+        return EXIT_FAILED
+    decision = evaluate_action(rulebook, constraints, args.permission, args.paths, known_permissions=known)
+    if args.json:
+        print(decision.model_dump_json(indent=2))
+    else:
+        print(f"{decision.outcome.value.upper()}: {decision.message}  [{decision.code}]")
+        for path in decision.paths:
+            print(f"  {'ok  ' if path.allowed else 'DENY'} {path.path}" + ("" if path.allowed else f"  ({path.code})"))
+    return {Policy.ALLOW: EXIT_OK, Policy.ASK: 3, Policy.DENY: EXIT_FAILED}[decision.outcome]
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
-    "serve": cmd_serve, "nodes": cmd_nodes, "validate": cmd_validate, "run": cmd_run}
+    "serve": cmd_serve, "nodes": cmd_nodes, "validate": cmd_validate, "run": cmd_run, "rulebook": cmd_rulebook}
 
 _OVERVIEW = __doc__
 
