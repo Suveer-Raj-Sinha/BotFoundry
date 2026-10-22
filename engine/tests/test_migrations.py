@@ -6,6 +6,9 @@ from botfoundry.storage.database import Database, StorageError
 from botfoundry.storage.migrations import MIGRATIONS, Migration, applied_versions, migrate
 
 
+NEXT = len(MIGRATIONS) + 1          # the first version number that does not exist yet
+
+
 def tables(db):
     return {r["name"] for r in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
 
@@ -37,30 +40,30 @@ def test_upgrade_path_keeps_existing_data(tmp_path):
         conn.execute("INSERT INTO workflows VALUES ('w', 'Saved', '{}', 'then', 'then')")
     first.close()
 
-    v2 = Migration(2, "add notes", ("ALTER TABLE workflows ADD COLUMN notes TEXT DEFAULT ''",))
+    extra = Migration(NEXT, "add notes", ("ALTER TABLE workflows ADD COLUMN notes TEXT DEFAULT ''",))
     second = Database(path)
-    assert migrate(second, MIGRATIONS + (v2,)) == 2
+    assert migrate(second, MIGRATIONS + (extra,)) == NEXT
     row = second.query_one("SELECT name, notes FROM workflows WHERE id='w'")
     assert (row["name"], row["notes"]) == ("Saved", "")
-    assert applied_versions(second) == {1, 2}
+    assert applied_versions(second) == set(range(1, NEXT + 1))
 
 
 def test_failed_migration_rolls_back_completely():
     db = Database(":memory:")
     migrate(db)
-    broken = Migration(2, "half broken", (
+    broken = Migration(NEXT, "half broken", (
         "CREATE TABLE should_not_survive (x INTEGER)",
         "THIS IS NOT SQL",
     ))
     with pytest.raises(StorageError, match="rolled back"):
         migrate(db, MIGRATIONS + (broken,))
     assert "should_not_survive" not in tables(db)      # first statement was undone
-    assert applied_versions(db) == {1}                  # and version 2 was never recorded
+    assert applied_versions(db) == {m.version for m in MIGRATIONS}      # and the new version was never recorded
 
 
 def test_database_from_a_newer_version_is_refused():
     db = Database(":memory:")
-    migrate(db, MIGRATIONS + (Migration(2, "future", ("CREATE TABLE future_stuff (x INTEGER)",)),))
+    migrate(db, MIGRATIONS + (Migration(NEXT, "future", ("CREATE TABLE future_stuff (x INTEGER)",)),))
     with pytest.raises(StorageError, match="Update BotFoundry"):
         migrate(db)                                     # code only knows version 1
     assert "future_stuff" in tables(db)                 # and nothing was touched
