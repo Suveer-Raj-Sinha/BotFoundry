@@ -1,6 +1,6 @@
 # Local API and CLI
 
-Status: engine 0.7.0 (Phase 1.4). Code: `engine/botfoundry/api/`, `run_manager.py`, `cli.py`.
+Status: engine 0.8.0 (Phase 1.4, plus the Rulebook endpoints from Phase 2.1). Code: `engine/botfoundry/api/`, `run_manager.py`, `cli.py`.
 
 The engine listens on `127.0.0.1` only. **Every endpoint requires the header `X-BotFoundry-Token`**
 (the desktop app gets a random one each launch). All bodies are JSON.
@@ -20,6 +20,12 @@ The engine listens on `127.0.0.1` only. **Every endpoint requires the header `X-
 | `GET /runs/{id}` | Run with every node's status, outputs and error; `active`; `persistence_errors` | 200 / 404 |
 | `GET /runs/{id}/events?after=&limit=` | Events after a cursor (see polling below) | 200 / 404 |
 | `POST /runs/{id}/cancel` | Ask an active run to cancel | 202 / 404 / 409 |
+| `GET /permissions` | The permission vocabulary with risk and the system limit for each | 200 |
+| `POST /rulebooks/validate` | Check a Rulebook document; problems are in the result | 200 |
+| `GET /rulebooks`, `GET /rulebooks/{bot}` | Latest Rulebook per bot / one bot's latest | 200 / 404 |
+| `GET /rulebooks/{bot}/versions[/{n}]` | Version history / one version | 200 / 404 |
+| `PUT /rulebooks/{bot}?note=` | Save a new version (refused if it has any error; unchanged content makes no new version) | 200 / 422 |
+| `POST /rulebooks/{bot}/evaluate` | Dry run: what the engine would decide for a permission and paths | 200 / 404 |
 
 `POST /runs` validates first. An invalid workflow returns **422 `workflow_invalid`** with the issues and no run
 is created. A valid one returns 202 immediately; the run continues in the background.
@@ -31,7 +37,7 @@ One format everywhere (status codes are the usual HTTP ones):
 ```
 Codes: `unauthorized`, `not_found`, `method_not_allowed`, `invalid_request` (details list the problem fields, never
 the submitted values), `workflow_not_found`, `workflow_invalid`, `workflow_invalid_structure`, `id_mismatch`,
-`run_not_found`, `run_not_active`, `too_many_active_runs` (limit 8), `storage_error`, `storage_unavailable`,
+`run_not_found`, `run_not_active`, `rulebook_not_found`, `rulebook_invalid`, `too_many_active_runs` (limit 8), `storage_error`, `storage_unavailable`,
 `internal_error` (details are only in `engine.log`).
 
 ## Following a run (polling)
@@ -78,7 +84,9 @@ python -m botfoundry nodes [--json]                                 list node ty
 python -m botfoundry validate FILE [--json]                         check a workflow file
 python -m botfoundry run FILE [--data-dir D] [--no-save] [--json]   run a workflow, printing events live
 ```
-Exit codes: `0` ok / completed, `1` invalid or failed, `2` usage or environment problem (missing file or token,
+Rulebook commands are in `docs/rulebook.md`.
+
+Exit codes: `0` ok / completed / allowed, `3` needs approval (`rulebook check` only), `1` invalid or failed, `2` usage or environment problem (missing file or token,
 unreadable database), `130` cancelled (Ctrl+C). `run` saves to the database unless `--no-save`.
 Try the files in `examples/` (`hello`, `branching`, `failing`, `slow`). The packaged `botfoundry-engine.exe`
 accepts the same commands.

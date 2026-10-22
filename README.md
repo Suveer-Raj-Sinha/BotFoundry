@@ -22,7 +22,10 @@ own machine. No cloud account, no telemetry; AI is optional and never required.
 - **Local API and CLI:** validate, save and run workflows, follow a run's events, cancel it, browse history
   (`docs/api.md`); `python -m botfoundry run examples/hello.workflow.json` runs one from the terminal.
 - **Packaging:** the engine is frozen into one executable and bundled as a Tauri sidecar.
-- 189 engine tests, 6 frontend tests; every release has a changelog.
+- **Rulebooks (rules defined, enforcement next):** versioned per-bot permissions and approved folders with
+  conflict detection, system limits no Rulebook can exceed, and Windows-aware path authorization
+  (`docs/rulebook.md`).
+- 322 engine tests, 6 frontend tests; every release has a changelog.
 
 ## Architecture
 ```
@@ -61,12 +64,13 @@ engine/      Python engine: API, workflow core (node contract, validation, runne
 apps/desktop Tauri + React desktop app
 scripts/     bump.py (versions + changelogs), build_engine.py (freeze + smoke-test the engine)
 examples/    ready-to-run workflow files
-docs/        api.md, node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
+docs/        api.md, rulebook.md, node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
 ```
 
 ## Roadmap
 1. **Engine core** (done): node contract, validation, runner, events, persistence, local API and CLI.
-2. **Rulebook:** per-bot permissions, approved folders, action policies, approval gates, enforced by the engine.
+2. **Rulebook** (rules, validation, versions, API done; enforcement and approval gates next): per-bot
+   permissions, approved folders, action policies, approval gates, enforced by the engine.
 3. **The Fixer:** scan, hash, find duplicates, preview, approve, move safely, recover and undo.
 4. **Interface:** workflow canvas, live run view, history.
 5. Polish, scheduling, installer; then The Builder, optional local AI, templates.

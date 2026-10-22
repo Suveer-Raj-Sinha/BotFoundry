@@ -39,5 +39,6 @@ class WorkflowDefinition(BaseModel):
     id: str = Field(pattern=ID_PATTERN)
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
+    bot_id: str | None = Field(default=None, pattern=ID_PATTERN)  # which bot's Rulebook governs this workflow
     nodes: list[NodeInstance]
     edges: list[Edge] = Field(default_factory=list)

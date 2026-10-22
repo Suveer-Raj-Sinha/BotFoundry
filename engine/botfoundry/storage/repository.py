@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..rules.models import Rulebook
 from ..workflow.definition import WorkflowDefinition
 from ..workflow.events import TERMINAL_EVENTS, EventType, RunEvent
 from ..workflow.runner import NodeRecord, Run
@@ -92,6 +93,46 @@ class Storage:
         return {"id": row["id"], "name": row["name"], "description": definition.get("description", ""),
                 "node_count": len(definition.get("nodes", [])),
                 "created_at": row["created_at"], "updated_at": row["updated_at"]}
+
+    # ---- rulebooks (immutable versions) ---------------------------------------------------
+    def save_rulebook(self, rulebook: Rulebook, note: str | None = None) -> tuple[int, bool]:
+        """Store a new version unless the content is identical to the latest one.
+        Returns (version, created). Versions are never edited or deleted: a run can always be traced
+        back to the exact rules it followed."""
+        with self.db.transaction() as conn:
+            row = conn.execute("SELECT version, document FROM rulebook_versions WHERE bot_id=? "
+                               "ORDER BY version DESC LIMIT 1", (rulebook.bot_id,)).fetchone()
+            if row and Rulebook.model_validate_json(row["document"]).canonical_json() == rulebook.canonical_json():
+                return row["version"], False
+            version = (row["version"] if row else 0) + 1
+            conn.execute("INSERT INTO rulebook_versions (bot_id, version, name, document, note, created_at) "
+                         "VALUES (?, ?, ?, ?, ?, ?)",
+                         (rulebook.bot_id, version, rulebook.name, rulebook.model_dump_json(), note, _now()))
+        return version, True
+
+    def get_rulebook(self, bot_id: str, version: int | None = None) -> dict[str, Any] | None:
+        """The latest version (or a specific one) as {rulebook, version, created_at, note}."""
+        if version is None:
+            row = self.db.query_one("SELECT * FROM rulebook_versions WHERE bot_id=? ORDER BY version DESC LIMIT 1", (bot_id,))
+        else:
+            row = self.db.query_one("SELECT * FROM rulebook_versions WHERE bot_id=? AND version=?", (bot_id, version))
+        if not row:
+            return None
+        return {"rulebook": Rulebook.model_validate_json(row["document"]), "version": row["version"],
+                "created_at": row["created_at"], "note": row["note"]}
+
+    def list_rulebooks(self) -> list[dict[str, Any]]:
+        rows = self.db.query("""SELECT r.bot_id, r.name, r.version, r.created_at FROM rulebook_versions r
+                                WHERE r.version = (SELECT MAX(version) FROM rulebook_versions WHERE bot_id = r.bot_id)
+                                ORDER BY r.bot_id""")
+        return [{"bot_id": r["bot_id"], "name": r["name"], "version": r["version"], "created_at": r["created_at"]}
+                for r in rows]
+
+    def list_rulebook_versions(self, bot_id: str) -> list[dict[str, Any]]:
+        rows = self.db.query("SELECT version, name, note, created_at FROM rulebook_versions WHERE bot_id=? "
+                             "ORDER BY version DESC", (bot_id,))
+        return [{"version": r["version"], "name": r["name"], "note": r["note"], "created_at": r["created_at"]}
+                for r in rows]
 
     # ---- runs -----------------------------------------------------------------------------
     def attach(self, run: Run) -> "RunPersister":

@@ -61,6 +61,18 @@ MIGRATIONS: tuple[Migration, ...] = (
             PRIMARY KEY (run_id, id)
         )""",
     )),
+    Migration(2, "rulebooks", (
+        """CREATE TABLE rulebook_versions (
+            bot_id      TEXT NOT NULL,
+            version     INTEGER NOT NULL,
+            name        TEXT NOT NULL,
+            document    TEXT NOT NULL,
+            note        TEXT,
+            created_at  TEXT NOT NULL,
+            PRIMARY KEY (bot_id, version)
+        )""",
+        "ALTER TABLE runs ADD COLUMN rulebook_bot_id TEXT",
+    )),
 )
 
 

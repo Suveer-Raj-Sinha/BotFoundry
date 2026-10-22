@@ -5,6 +5,37 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.8.0] - 2026-10-20
+
+### Added
+- Rulebooks, Phase 2.1 (`docs/rulebook.md`): one versioned JSON document per bot with approved and forbidden
+  folders, a policy per permission (allow, ask, deny), a default policy, limits and an approval timeout.
+  - Permission vocabulary with risk levels and **system limits no Rulebook can exceed**: `fs.delete` and
+    `network.access` denied, `process.run_tests` at most `ask`.
+  - Validation with conflict detection: unknown permissions (typos), policies above the system limit, drive
+    roots / profile roots / protected system folders as approved folders, an approved folder entirely inside a
+    forbidden one, and warnings for risky or pointless settings. A Rulebook with any error cannot be saved.
+  - Immutable versions: saving identical content creates no new version; nothing is edited or deleted.
+  - Evaluator: allow, ask or deny for a permission and paths; never more permissive than the system limits
+    or the Rulebook; no Rulebook means no permission.
+  - Path authorization (`rules/paths.py`): Windows-correct lexical rules (case-insensitivity, trailing
+    dots and spaces, `\\?\` prefixes, reserved device names, alternate data streams, 8.3 short names, UNC,
+    whole-component containment) plus a physical check that follows symlinks and junctions.
+  - API: `GET /permissions`, `POST /rulebooks/validate`, `GET /rulebooks[/{bot}[/versions[/{n}]]]`,
+    `PUT /rulebooks/{bot}`, `POST /rulebooks/{bot}/evaluate`. CLI: `rulebook validate` and `rulebook check`
+    (exit code 3 means "needs approval"). Example: `examples/downloads-cleaner.rulebook.json`.
+  - Migration 2: `rulebook_versions` table and `runs.rulebook_bot_id`.
+- `WorkflowDefinition.bot_id` (optional) names the bot whose Rulebook governs a workflow. Existing
+  workflows are unaffected.
+- The engine protects its own data folder (the database) from bots.
+- The frozen-engine smoke test also saves a Rulebook, checks an over-permissive one is refused and checks
+  decisions end to end.
+- 130 new tests (322 in total; the 3 that use real Windows junctions and symlinks only run on Windows).
+  Seventeen deliberate breakages of path, evaluator, validation, storage and API behavior are all caught.
+
+### Not yet
+- Rulebooks are **not enforced during runs yet**; that, and approval gates, are Phase 2.2.
+
 ## [0.7.1] - 2026-10-20
 
 ### Fixed

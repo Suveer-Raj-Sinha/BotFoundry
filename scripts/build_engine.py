@@ -97,6 +97,22 @@ HELLO = {"id": "smoke", "name": "Smoke test", "nodes": [
     "edges": [{"source": "start", "source_port": "payload", "target": "text", "target_port": "value"}]}
 
 
+def check_a_rulebook(base: str, token: str) -> None:
+    """Save a Rulebook and ask the frozen engine to judge actions against it."""
+    book = {"bot_id": "smoke-bot", "name": "Smoke", "permissions": {"git.read": "allow", "process.run_tests": "allow"}}
+    status, body = http_call("PUT", f"{base}/rulebooks/smoke-bot", token, book)
+    if status != 422:  # process.run_tests: allow exceeds the system limit, so this must be refused
+        raise SystemExit(f"Smoke test FAILED: an over-permissive Rulebook was not refused ({status})")
+    book["permissions"] = {"git.read": "allow", "process.run_tests": "ask"}
+    status, body = http_call("PUT", f"{base}/rulebooks/smoke-bot", token, book)
+    if status != 200 or json.loads(body)["version"] != 1:
+        raise SystemExit(f"Smoke test FAILED: saving a Rulebook returned {status}: {body}")
+    for permission, expected in (("git.read", "allow"), ("process.run_tests", "ask"), ("fs.delete", "deny")):
+        status, body = http_call("POST", f"{base}/rulebooks/smoke-bot/evaluate", token, {"permission": permission})
+        if status != 200 or json.loads(body)["decision"]["outcome"] != expected:
+            raise SystemExit(f"Smoke test FAILED: {permission} should be {expected}: {status} {body}")
+
+
 def run_a_workflow(base: str, token: str) -> None:
     """End to end through the frozen executable: start a run, wait for it, read its results back."""
     status, body = http_call("POST", f"{base}/runs", token, {"definition": HELLO})
@@ -155,8 +171,9 @@ def smoke_test(exe: Path) -> None:
         if bad_status != 401:
             raise SystemExit(f"Smoke test FAILED: wrong token returned {bad_status}, expected 401")
         run_a_workflow(f"http://127.0.0.1:{port}", token)
+        check_a_rulebook(f"http://127.0.0.1:{port}", token)
         print(f"      OK: healthy after {elapsed:.1f}s, version {__version__}, database schema "
-              f"v{MIGRATIONS[-1].version}, wrong token -> 401, a workflow ran end to end and was saved")
+              f"v{MIGRATIONS[-1].version}, wrong token -> 401, a workflow ran end to end, Rulebook limits enforced")
     finally:
         stop(proc)
         log.close()

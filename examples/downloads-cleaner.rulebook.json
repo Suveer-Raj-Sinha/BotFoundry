@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "bot_id": "downloads-cleaner",
+  "name": "Downloads cleaner",
+  "description": "Example for the future file-organizer bot. Replace YourName with your Windows user name.",
+  "allowed_folders": ["C:\\Users\\YourName\\Downloads"],
+  "forbidden_folders": ["C:\\Users\\YourName\\Downloads\\Keep"],
+  "default_policy": "deny",
+  "permissions": {
+    "fs.read": "allow",
+    "fs.move": "ask",
+    "fs.delete": "deny"
+  },
+  "limits": {"max_files_per_run": 500},
+  "approval": {"timeout_seconds": 300}
+}

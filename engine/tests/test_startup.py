@@ -4,6 +4,7 @@ import sys
 from fastapi.testclient import TestClient
 
 from botfoundry.api.app import create_app
+from botfoundry.storage.migrations import MIGRATIONS
 from botfoundry.config import DATABASE_FILE, Settings, TOKEN_HEADER, default_data_dir
 from botfoundry.startup import open_storage
 from botfoundry.storage import Storage
@@ -19,7 +20,7 @@ def test_health_reports_database_schema_version(tmp_path):
     storage, _ = open_storage(tmp_path)
     client = TestClient(create_app(Settings(token=TOKEN), storage))
     body = client.get("/health", headers={TOKEN_HEADER: TOKEN}).json()
-    assert body["database_schema_version"] == storage.schema_version == 1
+    assert body["database_schema_version"] == storage.schema_version == MIGRATIONS[-1].version
     storage.close()
 
 
