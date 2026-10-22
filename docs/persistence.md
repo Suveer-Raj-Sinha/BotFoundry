@@ -1,6 +1,6 @@
 # Persistence (SQLite)
 
-Status: engine 0.6.0 (Phase 1.3). Code: `engine/botfoundry/storage/`.
+Status: engine 0.8.0 (Phase 1.3, plus migration 2 from Phase 2.1). Code: `engine/botfoundry/storage/`.
 
 ## Where data lives
 `<data-dir>/botfoundry.db` (WAL mode, so you will also see `-wal` and `-shm` files while it is open).
@@ -8,14 +8,17 @@ Status: engine 0.6.0 (Phase 1.3). Code: `engine/botfoundry/storage/`.
 - Desktop app, packaged: `%LOCALAPPDATA%\com.botfoundry.app\`, next to `engine.log`.
 - Engine started by hand without `--data-dir`: `%LOCALAPPDATA%\BotFoundry\` (Linux/macOS: `~/.local/share/botfoundry/`).
 
-## Schema (migration 1)
+## Schema (migrations 1 and 2)
 | Table | Contents |
 |---|---|
 | `workflows` | id, name, definition (JSON), created_at, updated_at |
 | `runs` | run_id, workflow_id, workflow_name, **workflow_snapshot** (the exact definition that ran), status, error, `rulebook_version` (reserved for Phase 2), created_at, finished_at |
 | `node_runs` | per node of a run: status, outputs, summary, error, reason, started_at, finished_at |
 | `run_events` | the full ordered event log: (run_id, id) primary key, type, timestamp, node_id, payload |
+| `rulebook_versions` | (bot_id, version) primary key, name, the Rulebook document, note, created_at. Immutable: versions are only ever added |
 | `schema_migrations` | which migrations have been applied |
+
+`runs` also has `rulebook_version` and `rulebook_bot_id`, reserved for recording which Rulebook a run followed (filled in from Phase 2.2).
 
 Deleting or editing a workflow never changes past runs, because each run keeps its own snapshot.
 
