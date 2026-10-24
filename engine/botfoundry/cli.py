@@ -15,6 +15,7 @@ Exit codes:  0 ok / completed / allowed   1 invalid, failed or denied   2 usage 
 import argparse
 import asyncio
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -27,6 +28,27 @@ from .workflow.runner import Run, RunStatus
 from .workflow.validation import ValidationResult, parse_and_validate
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_CANCELLED = 0, 1, 2, 130
+
+
+def stdin_is_interactive() -> bool:
+    """True only when a person can really answer: standard input is a terminal or console.
+    (On Windows, `isatty()` also says True for the empty NUL device, so ask the console itself.)"""
+    try:
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+        if os.name != "nt":
+            return True
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD()
+        return bool(kernel32.GetConsoleMode(msvcrt.get_osfhandle(sys.stdin.fileno()), ctypes.byref(mode)))
+    except (AttributeError, ValueError, OSError):
+        return False  # no usable stdin: treat as unattended, never as interactive
 
 
 class CliError(Exception):
@@ -232,7 +254,7 @@ def cmd_run(argv: list[str]) -> int:
             (lambda e: print(e.model_dump_json(), flush=True)) if args.json else (lambda e: print(_event_line(e), flush=True)))
 
         mode = args.approve
-        if mode == "ask" and not sys.stdin.isatty():
+        if mode == "ask" and not stdin_is_interactive():
             mode = "no"
             print("No terminal to ask for approval: any approval request will be denied (use --approve yes to allow).",
                   file=sys.stderr)

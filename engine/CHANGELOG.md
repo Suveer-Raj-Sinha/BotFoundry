@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.9.2] - 2026-10-23
+
+### Fixed
+- On Windows an unattended `botfoundry run` (input from the empty `NUL` device, as with a scheduled task or a
+  script) was treated as if a person were at a terminal, because Python's `isatty()` reports True for `NUL`. The
+  approval request was still denied (reading from `NUL` fails at once), but it printed the interactive prompt and
+  skipped the "No terminal" notice. The engine now asks the Windows console itself whether input is a real console.
+  Found by the Windows test run; the logic is covered by a test that simulates the Windows calls.
+
 ## [0.9.1] - 2026-10-23
 
 ### Fixed

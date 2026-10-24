@@ -283,3 +283,70 @@ def test_the_bots_saved_rulebook_is_found_automatically(tmp_path):
     storage = Storage.open(data / DATABASE_FILE)
     assert storage.list_runs()[0]["rulebook_version"] == 1 and storage.list_runs()[0]["rulebook_bot_id"] == "fixer"
     storage.close()
+
+
+# ---- is anyone there to answer? -------------------------------------------------------------
+def test_an_empty_stdin_is_never_treated_as_a_terminal(monkeypatch):
+    """On Windows Python's isatty() says True for NUL; the engine must not believe it."""
+    from botfoundry.cli import stdin_is_interactive
+    with open(os.devnull) as empty:
+        monkeypatch.setattr(sys, "stdin", empty)
+        assert stdin_is_interactive() is False
+    read_end, write_end = os.pipe()
+    with os.fdopen(read_end) as pipe:
+        monkeypatch.setattr(sys, "stdin", pipe)
+        assert stdin_is_interactive() is False
+    os.close(write_end)
+    monkeypatch.setattr(sys, "stdin", None)
+    assert stdin_is_interactive() is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a pseudo-terminal")
+def test_a_real_terminal_is_recognized(monkeypatch):
+    import pty
+    from botfoundry.cli import stdin_is_interactive
+    master, slave = pty.openpty()
+    try:
+        with os.fdopen(slave) as terminal:
+            monkeypatch.setattr(sys, "stdin", terminal)
+            assert stdin_is_interactive() is True
+    finally:
+        os.close(master)
+
+
+def test_windows_nul_is_rejected_even_when_isatty_lies(monkeypatch):
+    """Simulates Windows (Python 3.11): isatty() is True for NUL, but the console check says it is not a console."""
+    import ctypes
+    import types
+
+    from botfoundry import cli
+
+    class FakeStdin:
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return 7
+
+    class Call:
+        def __init__(self, outcome):
+            self.outcome = outcome
+
+        def __call__(self, handle, mode):
+            if isinstance(self.outcome, Exception):
+                raise self.outcome
+            return self.outcome
+
+    def pretend_windows(console_result):
+        kernel = types.SimpleNamespace(GetConsoleMode=Call(console_result))
+        monkeypatch.setattr(cli, "os", types.SimpleNamespace(name="nt"))
+        monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(get_osfhandle=lambda fd: 123))
+        monkeypatch.setattr(ctypes, "WinDLL", lambda name, use_last_error=False: kernel, raising=False)
+        monkeypatch.setattr(sys, "stdin", FakeStdin())
+
+    pretend_windows(0)                                  # NUL: not a console
+    assert cli.stdin_is_interactive() is False
+    pretend_windows(1)                                  # a genuine console window
+    assert cli.stdin_is_interactive() is True
+    pretend_windows(OSError("invalid handle"))          # anything odd: unattended, never interactive
+    assert cli.stdin_is_interactive() is False
