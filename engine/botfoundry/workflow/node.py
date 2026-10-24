@@ -3,7 +3,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from pydantic import BaseModel
 
@@ -62,6 +62,33 @@ def _no_progress(fraction: float | None, message: str) -> None:
 
 
 @dataclass
+class RunBudget:
+    """Per-run limits from the bot's Rulebook that nodes draw on as they work."""
+    max_files: int | None = None
+    used_files: int = 0
+
+    def consume_files(self, count: int = 1) -> None:
+        """Call before touching `count` more files. Raises once the run's file limit would be exceeded."""
+        if count < 0:
+            raise ValueError("count must not be negative")
+        if self.max_files is not None and self.used_files + count > self.max_files:
+            raise NodeError("limit.max_files_per_run",
+                            f"This run may touch at most {self.max_files} file(s); {self.used_files} already used, "
+                            f"{count} more requested.",
+                            {"limit": self.max_files, "used": self.used_files, "requested": count})
+        self.used_files += count
+
+
+def _deny_authorize(permission: str, paths: Sequence[str] = ()) -> list[str]:
+    raise NodeError("permission.denied", "No Rulebook context is available, so this action is denied.",
+                    {"permission": permission})
+
+
+async def _no_approvals(summary: str, details: dict[str, Any] | None = None, timeout_seconds: float | None = None) -> None:
+    raise NodeError("approval.unavailable", "Approvals are not available in this context.")
+
+
+@dataclass
 class NodeContext:
     """What the engine gives a handler while it runs."""
 
@@ -69,6 +96,12 @@ class NodeContext:
     node_id: str
     cancel: CancelToken
     report_progress: Callable[[float | None, str], None] = field(default=_no_progress)
+    # Ask the engine whether this node may use `permission` on `paths`. Returns the RESOLVED paths to act on
+    # (never the text you were given); raises NodeError when the Rulebook or the system limits say no.
+    authorize: Callable[[str, Sequence[str]], list[str]] = field(default=_deny_authorize)
+    # Pause the run until a person approves; raises NodeError if denied or if nobody answers in time.
+    request_approval: Callable[..., Awaitable[None]] = field(default=_no_approvals)
+    budget: RunBudget = field(default_factory=RunBudget)
 
 
 @dataclass(frozen=True)

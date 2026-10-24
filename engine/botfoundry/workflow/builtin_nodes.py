@@ -132,7 +132,28 @@ WAIT = NodeSpec(
     handler=_wait, timeout_seconds=90,
 )
 
-BUILTIN_NODES = (MANUAL_TRIGGER, CONDITION, TRANSFORM, WAIT)
+# ---- core.approval_gate -------------------------------------------------------------------
+class ApprovalGateConfig(BaseModel):
+    summary: str = Field(min_length=1, max_length=500)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+async def _approval_gate(ctx: NodeContext, config: ApprovalGateConfig, inputs: dict[str, Any]) -> NodeResult:
+    preview = json.dumps(inputs["value"], default=str, ensure_ascii=False)
+    details = {**config.details, "value_preview": preview[:500] + ("..." if len(preview) > 500 else "")}
+    await ctx.request_approval(config.summary, details)  # raises (failing the node) if denied or unanswered
+    return NodeResult(outputs={"result": inputs["value"]}, summary="Approved")
+
+
+APPROVAL_GATE = NodeSpec(
+    id="core.approval_gate", version=1, title="Approval Gate",
+    description="Pauses the run and shows a summary until a person approves. Denied or unanswered = the run stops.",
+    category=Category.APPROVAL, config_model=ApprovalGateConfig,
+    inputs=(PortSpec(name="value"),), outputs=(PortSpec(name="result"),),
+    handler=_approval_gate, timeout_seconds=30,   # active time only: waiting for a person does not count
+)
+
+BUILTIN_NODES = (MANUAL_TRIGGER, CONDITION, TRANSFORM, WAIT, APPROVAL_GATE)
 
 
 def build_default_registry() -> NodeRegistry:

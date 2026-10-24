@@ -1,5 +1,7 @@
 from fastapi import Request
 
+from ..rules.constraints import SystemConstraints
+from ..rules.permissions import known_permission_names
 from ..run_manager import RunManager
 from ..storage.repository import Storage
 from ..workflow.registry import NodeRegistry
@@ -20,3 +22,11 @@ def get_storage(request: Request) -> Storage:
 def get_manager(request: Request) -> RunManager:
     get_storage(request)
     return request.app.state.run_manager
+
+
+def get_constraints(request: Request) -> SystemConstraints:
+    return request.app.state.constraints
+
+
+def get_known_permissions(request: Request) -> set[str]:
+    return known_permission_names(p for spec in get_registry(request).all() for p in spec.permissions)

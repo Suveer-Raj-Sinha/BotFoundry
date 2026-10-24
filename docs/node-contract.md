@@ -1,6 +1,6 @@
 # Node contract and workflow format
 
-Status: engine 0.7.0 (Phase 1.1 to 1.4). Code: `engine/botfoundry/workflow/`.
+Status: engine 0.9.0 (Phase 1.1 to 2.2). Code: `engine/botfoundry/workflow/`.
 
 ## A node (a registered, typed operation)
 Every node type is a `NodeSpec` that defines:
@@ -54,22 +54,23 @@ await run.execute()                  # validate, then run nodes in order
 run.cancel()                         # any time, any thread
 run.snapshot()                       # JSON-friendly state of the run and every node
 ```
-- Run status: `created, validating, running, completed, failed, cancelled`.
-- Node status: `pending, running, completed, failed, skipped, cancelled`.
+- Run status: `created, validating, running, waiting_approval, completed, failed, cancelled`.
+- Node status: `pending, running, waiting_approval, completed, failed, skipped, cancelled`.
 - **Failure policy:** the first failed node stops the run; remaining nodes are `skipped` with a reason.
 - **Timeouts:** `NodeSpec.timeout_seconds` per node. On timeout the handler task is cancelled and the node fails with `node.timeout`.
 - **Cancellation:** cancellable nodes are interrupted immediately; non-cancellable nodes finish, then the run stops as `cancelled`.
 - **Runtime checks** (a node can never return something the contract does not allow): input types
   (`node.invalid_input`), result shape and output ports/types (`node.invalid_result`).
 - Error codes written to `node.error.code`: `node.timeout`, `node.unexpected_error`, `node.invalid_input`,
-  `node.invalid_result`, or any code a handler raises with `NodeError`.
+  `node.invalid_result`, `permission.denied`, `permission.undeclared`, `node.approval_denied`,
+  `limit.max_files_per_run`, `run.time_limit`, path codes (`path.*`), or any code a handler raises with `NodeError`.
 
 ## Events
 Each event: `id` (1, 2, 3... per run), `run_id`, `type`, `timestamp` (UTC), `node_id` (when relevant), `payload`.
 
 | Type | Payload |
 |---|---|
-| `run_created` | workflow_id, workflow_name, node_count |
+| `run_created` | workflow_id, workflow_name, node_count, rulebook (`{bot_id, version}` or null) |
 | `validation_started` | - |
 | `validation_succeeded` | warnings[], required_permissions[] |
 | `validation_failed` | issues[] |
@@ -81,7 +82,9 @@ Each event: `id` (1, 2, 3... per run), `run_id`, `type`, `timestamp` (UTC), `nod
 | `run_completed` | completed, skipped, duration_ms |
 | `run_failed` | error, failed_node, duration_ms |
 | `run_cancelled` | reason, running_node, not_started[], duration_ms |
-| `approval_requested/granted/denied` | reserved for Phase 2 |
+| `approval_requested` | approval_id, kind, summary, details, timeout_seconds, expires_at |
+| `approval_granted` | approval_id, decided_by, reason (`approved`), note |
+| `approval_denied` | approval_id, decided_by, reason (`denied`, `timeout`, `cancelled`, `run_failed`, `interrupted`), note |
 
 Exactly one of `run_completed`, `run_failed`, `run_cancelled` ends every run. Poll with `events.since(last_id)`.
 
@@ -92,3 +95,16 @@ Exactly one of `run_completed`, `run_failed`, `run_cancelled` ends every run. Po
 | `core.condition` | logic | in `value`; out `true`, `false` (only one is active) | `operator`, `compare_to` |
 | `core.transform` | data | in `value`; out `result` | `operation`: to_upper, to_lower, length, to_string |
 | `core.wait` | logic | in `value`; out `result` (same value) | `seconds` 0 to 60 (default 1) |
+| `core.approval_gate` | approval | in `value`; out `result` (same value) | `summary`, `details`. Pauses until a person approves |
+
+## What a node can use while it runs (`NodeContext`)
+| Hook | Purpose |
+|---|---|
+| `ctx.report_progress(fraction, message)` | Progress events |
+| `ctx.cancel` | Cooperative cancellation token |
+| `ctx.authorize(permission, paths)` | Ask the engine; returns the resolved paths to act on, or raises `NodeError` (see `docs/rulebook.md`) |
+| `await ctx.request_approval(summary, details)` | Pause until a person approves; raises if denied or unanswered |
+| `ctx.budget.consume_files(n)` | Count files against the Rulebook's per-run limit |
+
+A node that declares `permissions` is checked **before** it runs; see `docs/rulebook.md` for the full rules.
+Outside a run (for example a handler called directly in a test) the defaults deny everything.

@@ -97,6 +97,53 @@ HELLO = {"id": "smoke", "name": "Smoke test", "nodes": [
     "edges": [{"source": "start", "source_port": "payload", "target": "text", "target_port": "value"}]}
 
 
+def check_a_rulebook(base: str, token: str) -> None:
+    """Save a Rulebook and ask the frozen engine to judge actions against it."""
+    book = {"bot_id": "smoke-bot", "name": "Smoke", "permissions": {"git.read": "allow", "process.run_tests": "allow"}}
+    status, body = http_call("PUT", f"{base}/rulebooks/smoke-bot", token, book)
+    if status != 422:  # process.run_tests: allow exceeds the system limit, so this must be refused
+        raise SystemExit(f"Smoke test FAILED: an over-permissive Rulebook was not refused ({status})")
+    book["permissions"] = {"git.read": "allow", "process.run_tests": "ask"}
+    status, body = http_call("PUT", f"{base}/rulebooks/smoke-bot", token, book)
+    if status != 200 or json.loads(body)["version"] != 1:
+        raise SystemExit(f"Smoke test FAILED: saving a Rulebook returned {status}: {body}")
+    for permission, expected in (("git.read", "allow"), ("process.run_tests", "ask"), ("fs.delete", "deny")):
+        status, body = http_call("POST", f"{base}/rulebooks/smoke-bot/evaluate", token, {"permission": permission})
+        if status != 200 or json.loads(body)["decision"]["outcome"] != expected:
+            raise SystemExit(f"Smoke test FAILED: {permission} should be {expected}: {status} {body}")
+
+
+def check_an_approval(base: str, token: str) -> None:
+    """A run must pause at an approval gate, resume when answered, and refuse a second answer."""
+    gate = {"id": "gate-smoke", "name": "Gate", "nodes": [
+        {"id": "start", "type": "core.manual_trigger", "config": {"payload": {"ok": True}}},
+        {"id": "gate", "type": "core.approval_gate", "config": {"summary": "Smoke test: continue?"}}],
+        "edges": [{"source": "start", "source_port": "payload", "target": "gate", "target_port": "value"}]}
+    status, body = http_call("POST", f"{base}/runs", token, {"definition": gate})
+    if status != 202:
+        raise SystemExit(f"Smoke test FAILED: starting the approval workflow returned {status}: {body}")
+    run_id = json.loads(body)["run_id"]
+    for _ in range(100):
+        run = json.loads(http_call("GET", f"{base}/runs/{run_id}", token)[1])
+        if run["status"] == "waiting_approval":
+            break
+        time.sleep(0.1)
+    else:
+        raise SystemExit(f"Smoke test FAILED: the run never paused for approval: {run}")
+    status, body = http_call("POST", f"{base}/runs/{run_id}/approvals/ap-1", token, {"approve": True})
+    if status != 200 or json.loads(body)["status"] != "granted":
+        raise SystemExit(f"Smoke test FAILED: answering the approval returned {status}: {body}")
+    for _ in range(100):
+        run = json.loads(http_call("GET", f"{base}/runs/{run_id}", token)[1])
+        if run["status"] in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(0.1)
+    if run["status"] != "completed":
+        raise SystemExit(f"Smoke test FAILED: the run did not finish after approval: {run}")
+    if http_call("POST", f"{base}/runs/{run_id}/approvals/ap-1", token, {"approve": False})[0] != 409:
+        raise SystemExit("Smoke test FAILED: a second answer was not refused")
+
+
 def run_a_workflow(base: str, token: str) -> None:
     """End to end through the frozen executable: start a run, wait for it, read its results back."""
     status, body = http_call("POST", f"{base}/runs", token, {"definition": HELLO})
@@ -155,8 +202,10 @@ def smoke_test(exe: Path) -> None:
         if bad_status != 401:
             raise SystemExit(f"Smoke test FAILED: wrong token returned {bad_status}, expected 401")
         run_a_workflow(f"http://127.0.0.1:{port}", token)
+        check_a_rulebook(f"http://127.0.0.1:{port}", token)
+        check_an_approval(f"http://127.0.0.1:{port}", token)
         print(f"      OK: healthy after {elapsed:.1f}s, version {__version__}, database schema "
-              f"v{MIGRATIONS[-1].version}, wrong token -> 401, a workflow ran end to end and was saved")
+              f"v{MIGRATIONS[-1].version}, wrong token -> 401, a workflow ran end to end, Rulebook limits enforced, an approval gate paused and resumed")
     finally:
         stop(proc)
         log.close()

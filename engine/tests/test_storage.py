@@ -319,3 +319,18 @@ def test_task_cancellation_is_persisted_with_the_running_node_cancelled(storage,
     assert saved["status"] == "cancelled"
     assert {n["node_id"]: n["status"] for n in saved["nodes"]} == {"start": "completed", "slow": "cancelled"}
     assert storage.get_events(run.run_id)[-1].payload["running_node"] == "slow"
+
+
+def test_runs_created_within_the_same_clock_tick_still_list_newest_first(storage, registry):
+    """Windows' clock advances only about every 15 ms, so quick successive runs can share a timestamp."""
+    from datetime import datetime, timezone
+    frozen = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ids = []
+    for _ in range(5):
+        run = Run(linear(), registry)
+        run.created_at = frozen                      # identical timestamps, as on a coarse clock
+        storage.attach(run)
+        ids.append(run.run_id)
+    assert [r["run_id"] for r in storage.list_runs()] == list(reversed(ids))
+    assert [r["run_id"] for r in storage.list_runs(limit=2)] == [ids[4], ids[3]]
+    assert [r["run_id"] for r in storage.list_runs(limit=2, offset=2)] == [ids[2], ids[1]]

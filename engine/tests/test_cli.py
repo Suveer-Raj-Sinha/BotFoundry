@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from botfoundry.storage.migrations import MIGRATIONS
 from botfoundry.config import DATABASE_FILE
 from botfoundry.storage import Storage
 from botfoundry.workflow.builtin_nodes import build_default_registry
@@ -26,8 +27,10 @@ def cli(*args, env_extra=None, timeout=60):
     env = {k: v for k, v in os.environ.items() if k != "BOTFOUNDRY_TOKEN"}
     env["PYTHONIOENCODING"] = "utf-8"
     env.update(env_extra or {})
+    # stdin=DEVNULL: the child must never inherit the developer's terminal (it would see a real keyboard and
+    # start asking approval questions instead of behaving as it does when run unattended).
     return subprocess.run([sys.executable, "-m", "botfoundry", *map(str, args)], capture_output=True, text=True,
-                          timeout=timeout, env=env)
+                          timeout=timeout, env=env, stdin=subprocess.DEVNULL)
 
 
 def write(tmp_path, name, data):
@@ -40,7 +43,7 @@ def write(tmp_path, name, data):
 def test_nodes_lists_the_catalog():
     out = cli("nodes")
     assert out.returncode == 0
-    for node_id in ("core.manual_trigger", "core.condition", "core.transform", "core.wait"):
+    for node_id in ("core.manual_trigger", "core.condition", "core.transform", "core.wait", "core.approval_gate"):
         assert node_id in out.stdout
     catalog = json.loads(cli("nodes", "--json").stdout)
     assert {n["id"] for n in catalog} >= {"core.wait"} and "config_schema" in catalog[0]
@@ -138,7 +141,7 @@ def test_ctrl_c_cancels_a_running_workflow_and_records_it(tmp_path):
     data = tmp_path / "data"
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.Popen([sys.executable, "-m", "botfoundry", "run", str(EXAMPLES / "slow.workflow.json"),
-                             "--data-dir", str(data)], stdout=subprocess.PIPE, text=True, env=env)
+                             "--data-dir", str(data)], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, env=env)
     try:
         deadline = time.monotonic() + 20
         for line in proc.stdout:
@@ -175,7 +178,7 @@ def test_serve_still_starts_with_the_original_arguments(tmp_path):
     log = (tmp_path / "engine.log").open("w+")
     proc = subprocess.Popen([sys.executable, "-m", "botfoundry", "--port", str(port), "--data-dir", str(tmp_path / "d"),
                              "--parent-pid", str(os.getpid())], env={**os.environ, "BOTFOUNDRY_TOKEN": TOKEN},
-                            stdout=log, stderr=subprocess.STDOUT)
+                            stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     try:
         body = None
         for _ in range(100):
@@ -187,10 +190,10 @@ def test_serve_still_starts_with_the_original_arguments(tmp_path):
             except (urllib.error.URLError, ConnectionError, OSError):
                 time.sleep(0.2)
         assert body is not None, "engine did not start"
-        assert body["status"] == "ok" and body["database_schema_version"] == 1
+        assert body["status"] == "ok" and body["database_schema_version"] == MIGRATIONS[-1].version
         request = urllib.request.Request(f"http://127.0.0.1:{port}/nodes", headers={"X-BotFoundry-Token": TOKEN})
         with urllib.request.urlopen(request, timeout=2) as response:
-            assert len(json.loads(response.read())["nodes"]) == 4
+            assert len(json.loads(response.read())["nodes"]) == 5
     finally:
         proc.terminate()
         proc.wait(timeout=15)
@@ -214,3 +217,69 @@ def test_serve_with_an_unreadable_database_exits_cleanly(tmp_path):
 def test_top_level_help_lists_the_commands():
     out = cli("--help")
     assert out.returncode == 0 and all(word in out.stdout for word in ("serve", "validate", "run", "nodes"))
+
+
+# ---- rulebook commands --------------------------------------------------------------------
+def test_rulebook_validate_and_check(tmp_path):
+    rulebook = write(tmp_path, "r.json", {"bot_id": "fixer", "name": "Fixer", "limits": {"max_files_per_run": 5},
+                                          "permissions": {"git.read": "allow", "process.run_tests": "ask"}})
+    assert cli("rulebook", "validate", rulebook).returncode == 0
+    allowed = cli("rulebook", "check", rulebook, "git.read")
+    assert allowed.returncode == 0 and allowed.stdout.startswith("ALLOW")
+    asked = cli("rulebook", "check", rulebook, "process.run_tests")
+    assert asked.returncode == 3 and asked.stdout.startswith("ASK")
+    denied = cli("rulebook", "check", rulebook, "fs.delete")
+    assert denied.returncode == 1 and "system.limit" in denied.stdout
+    absolute_here = "C:\\nowhere\\x" if os.name == "nt" else "/nowhere/x"      # absolute on this OS, but not approved
+    outside = cli("rulebook", "check", rulebook, "git.read", absolute_here)
+    assert outside.returncode == 1 and "path.outside_allowed" in outside.stdout
+    relative = cli("rulebook", "check", rulebook, "git.read", "nowhere/x")           # relative on every OS
+    assert relative.returncode == 1 and "path.not_absolute" in relative.stdout
+    assert json.loads(cli("rulebook", "check", rulebook, "git.read", "--json").stdout)["outcome"] == "allow"
+
+
+def test_rulebook_validate_reports_errors(tmp_path):
+    bad = write(tmp_path, "bad.json", {"bot_id": "fixer", "name": "Fixer", "permissions": {"fs.delete": "allow", "fs.typo": "allow"}})
+    out = cli("rulebook", "validate", bad)
+    assert out.returncode == 1 and "rulebook.exceeds_system_limit" in out.stdout and "rulebook.unknown_permission" in out.stdout
+    refused = cli("rulebook", "check", bad, "fs.read")
+    assert refused.returncode == 1 and "fix them" in refused.stderr
+    assert cli("rulebook", "validate", tmp_path / "missing.json").returncode == 2
+
+
+# ---- approvals and rulebooks on the command line ------------------------------------------
+def test_approval_example_with_each_answer_mode(tmp_path):
+    example = EXAMPLES / "approval.workflow.json"
+    approved = cli("run", example, "--no-save", "--approve", "yes")
+    assert approved.returncode == 0 and "approval_granted" in approved.stdout and "run_completed" in approved.stdout
+    denied = cli("run", example, "--no-save", "--approve", "no")
+    assert denied.returncode == 1 and "approval_denied" in denied.stdout and "node.approval_denied" in denied.stdout
+    unattended = cli("run", example, "--no-save")                    # no terminal attached: denied by default
+    assert unattended.returncode == 1 and "No terminal" in unattended.stderr and "approval_denied" in unattended.stdout
+
+
+def test_a_rulebook_file_is_recorded_and_checked(tmp_path):
+    workflow = json.loads((EXAMPLES / "hello.workflow.json").read_text())
+    workflow["bot_id"] = "fixer"
+    wf_file = write(tmp_path, "w.json", workflow)
+    good = write(tmp_path, "rb.json", {"bot_id": "fixer", "name": "Fixer", "permissions": {"git.read": "allow"}})
+    out = cli("run", wf_file, "--no-save", "--rulebook", good)
+    assert out.returncode == 0 and "Rulebook: fixer" in out.stdout
+    bad = write(tmp_path, "bad.json", {"bot_id": "fixer", "name": "Fixer", "permissions": {"fs.delete": "allow"}})
+    refused = cli("run", wf_file, "--no-save", "--rulebook", bad)
+    assert refused.returncode == 1 and "nothing was run" in refused.stderr and "rulebook.exceeds_system_limit" in refused.stderr
+
+
+def test_the_bots_saved_rulebook_is_found_automatically(tmp_path):
+    from botfoundry.rules.models import Rulebook
+    data = tmp_path / "data"
+    storage = Storage.open(data / DATABASE_FILE)
+    storage.save_rulebook(Rulebook.model_validate({"bot_id": "fixer", "name": "Fixer", "permissions": {"git.read": "allow"}}))
+    storage.close()
+    workflow = json.loads((EXAMPLES / "hello.workflow.json").read_text())
+    workflow["bot_id"] = "fixer"
+    out = cli("run", write(tmp_path, "w.json", workflow), "--data-dir", data)
+    assert out.returncode == 0 and "Rulebook: fixer v1" in out.stdout
+    storage = Storage.open(data / DATABASE_FILE)
+    assert storage.list_runs()[0]["rulebook_version"] == 1 and storage.list_runs()[0]["rulebook_bot_id"] == "fixer"
+    storage.close()

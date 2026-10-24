@@ -49,3 +49,15 @@ def test_failing_example_fails_honestly():
     run = asyncio.run(run_workflow(definition, registry))
     assert run.status == RunStatus.FAILED and run.error["code"] == "condition.type_error"
     assert run.nodes["never_runs"].status == NodeStatus.SKIPPED
+
+
+def test_approval_example_pauses_and_follows_the_answer():
+    from botfoundry.workflow.events import EventType
+    for approve, status in ((True, RunStatus.COMPLETED), (False, RunStatus.FAILED)):
+        definition, _, registry = load("approval.workflow.json")
+        from botfoundry.workflow.runner import Run
+        run = Run(definition, registry)
+        run.events.subscribe(lambda e, r=run, a=approve: r.respond(e.payload["approval_id"], a)
+                             if e.type == EventType.APPROVAL_REQUESTED else None)
+        asyncio.run(run.execute())
+        assert run.status == status

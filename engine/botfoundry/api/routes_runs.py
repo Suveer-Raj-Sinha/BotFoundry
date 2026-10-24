@@ -3,13 +3,16 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from ..run_manager import TooManyActiveRuns
+from ..rules.validation import validate_rulebook
+from ..run_manager import RunNotActive, TooManyActiveRuns
 from ..storage.database import StorageError
+from ..workflow.approvals import ApprovalNotFound, ApprovalNotPending
 from ..workflow.definition import WorkflowDefinition
 from ..workflow.validation import parse_and_validate, validate_workflow
-from .deps import get_manager, get_registry, get_storage
+from .deps import get_constraints, get_known_permissions, get_manager, get_registry, get_storage
 from .errors import ApiError
-from .schemas import CancelOut, EventsPage, RunDetailOut, RunList, RunStart
+from .schemas import (ApprovalDecision, ApprovalList, ApprovalOut, CancelOut, EventsPage, PendingApprovalList,
+                      RunDetailOut, RunList, RunStart)
 from .security import require_token
 
 router = APIRouter(dependencies=[Depends(require_token)])
@@ -23,6 +26,7 @@ def _detail(request: Request, run_id: str) -> dict[str, Any]:
     manager = get_manager(request)
     run["active"] = manager.is_active(run_id)
     run["persistence_errors"] = manager.persistence_errors(run_id)
+    run["pending_approvals"] = [a for a in get_storage(request).get_approvals(run_id) if a["status"] == "pending"]
     return run
 
 
@@ -46,8 +50,27 @@ async def start_run(body: RunStart, request: Request) -> dict[str, Any]:
         raise ApiError(422, "workflow_invalid", "The workflow has validation errors, so no run was started.",
                        {"issues": _issues(result)})
 
+    # Pin the bot's latest Rulebook for this run, re-checked under today's system rules.
+    rulebook, version = None, None
+    if definition.bot_id:
+        found = storage.get_rulebook(definition.bot_id)
+        if found is not None:
+            check = validate_rulebook(found["rulebook"], get_constraints(request), get_known_permissions(request))
+            if not check.ok:
+                raise ApiError(422, "rulebook_invalid",
+                               f"Rulebook '{definition.bot_id}' v{found['version']} no longer passes validation under "
+                               "the current system rules, so no run was started. Fix and save it again.",
+                               {"issues": _issues(check)})
+            rulebook, version = found["rulebook"], found["version"]
+    if result.required_permissions and rulebook is None:
+        why = ("The workflow has no bot_id" if not definition.bot_id else f"Bot '{definition.bot_id}' has no Rulebook")
+        raise ApiError(422, "rulebook_required",
+                       f"{why}, but its nodes need permissions ({', '.join(result.required_permissions)}). "
+                       "Set bot_id and save a Rulebook for that bot first. No run was started.",
+                       {"required_permissions": result.required_permissions, "bot_id": definition.bot_id})
+
     try:
-        run = manager.start(definition)
+        run = manager.start(definition, rulebook=rulebook, rulebook_version=version)
     except TooManyActiveRuns as exc:
         raise ApiError(429, "too_many_active_runs", str(exc)) from exc
     except (sqlite3.Error, StorageError) as exc:
@@ -89,3 +112,34 @@ async def cancel_run(run_id: str, request: Request) -> CancelOut:
     if get_storage(request).get_run(run_id) is None:
         raise ApiError(404, "run_not_found", f"No run with id '{run_id}'.")
     raise ApiError(409, "run_not_active", "That run has already finished, so it cannot be cancelled.")
+
+
+@router.get("/approvals", response_model=PendingApprovalList)
+async def list_pending_approvals(request: Request) -> dict[str, Any]:
+    """Everything waiting for a person right now, across all active runs (the approvals inbox)."""
+    return {"approvals": get_manager(request).pending_approvals()}
+
+
+@router.get("/runs/{run_id}/approvals", response_model=ApprovalList)
+def list_run_approvals(run_id: str, request: Request) -> dict[str, Any]:
+    storage = get_storage(request)
+    if storage.get_run(run_id) is None:
+        raise ApiError(404, "run_not_found", f"No run with id '{run_id}'.")
+    return {"approvals": storage.get_approvals(run_id)}
+
+
+@router.post("/runs/{run_id}/approvals/{approval_id}", response_model=ApprovalOut)
+async def answer_approval(run_id: str, approval_id: str, body: ApprovalDecision, request: Request) -> dict[str, Any]:
+    """Approve or deny a pending request. The run continues (or fails) immediately."""
+    manager, storage = get_manager(request), get_storage(request)
+    try:
+        approval = manager.respond(run_id, approval_id, body.approve, body.note)
+    except RunNotActive:
+        if storage.get_run(run_id) is None:
+            raise ApiError(404, "run_not_found", f"No run with id '{run_id}'.")
+        raise ApiError(409, "run_not_active", "That run has already finished, so nothing is waiting for an answer.")
+    except ApprovalNotFound as exc:
+        raise ApiError(404, "approval_not_found", str(exc))
+    except ApprovalNotPending as exc:
+        raise ApiError(409, "approval_already_decided", str(exc))
+    return approval.to_dict()

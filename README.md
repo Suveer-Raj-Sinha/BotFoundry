@@ -22,7 +22,11 @@ own machine. No cloud account, no telemetry; AI is optional and never required.
 - **Local API and CLI:** validate, save and run workflows, follow a run's events, cancel it, browse history
   (`docs/api.md`); `python -m botfoundry run examples/hello.workflow.json` runs one from the terminal.
 - **Packaging:** the engine is frozen into one executable and bundled as a Tauri sidecar.
-- 189 engine tests, 6 frontend tests; every release has a changelog.
+- **Rulebooks, enforced:** versioned per-bot permissions and approved folders with conflict detection, system
+  limits no Rulebook can exceed, Windows-aware path authorization, and a runner that checks every node's
+  permissions before it runs. Actions that need approval pause the run until a person answers; no answer counts as
+  a denial. Each run records the exact Rulebook version it followed (`docs/rulebook.md`).
+- 372 engine tests, 6 frontend tests; every release has a changelog.
 
 ## Architecture
 ```
@@ -61,12 +65,13 @@ engine/      Python engine: API, workflow core (node contract, validation, runne
 apps/desktop Tauri + React desktop app
 scripts/     bump.py (versions + changelogs), build_engine.py (freeze + smoke-test the engine)
 examples/    ready-to-run workflow files
-docs/        api.md, node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
+docs/        api.md, rulebook.md, node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
 ```
 
 ## Roadmap
 1. **Engine core** (done): node contract, validation, runner, events, persistence, local API and CLI.
-2. **Rulebook:** per-bot permissions, approved folders, action policies, approval gates, enforced by the engine.
+2. **Rulebook** (done): per-bot permissions, approved folders, action policies, approval gates, enforced by
+   the engine.
 3. **The Fixer:** scan, hash, find duplicates, preview, approve, move safely, recover and undo.
 4. **Interface:** workflow canvas, live run view, history.
 5. Polish, scheduling, installer; then The Builder, optional local AI, templates.
@@ -78,6 +83,12 @@ cd engine
 .\.venv\Scripts\python.exe -m botfoundry validate ..\examples\branching.workflow.json
 .\.venv\Scripts\python.exe -m botfoundry run ..\examples\branching.workflow.json --no-save
 ```
+
+## Try an approval
+```powershell
+.\.venv\Scripts\python.exe -m botfoundry run ..\examples\approval.workflow.json --no-save
+```
+The run pauses and asks on the terminal; `--approve yes` or `--approve no` answers automatically.
 
 ## Versions
 The engine and the app are versioned separately (`engine/CHANGELOG.md`, `apps/desktop/CHANGELOG.md`).

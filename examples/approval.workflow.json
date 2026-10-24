@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "approval-demo",
+  "name": "Approval demo",
+  "description": "Pauses at an Approval Gate until you answer. Run it with: botfoundry run examples/approval.workflow.json",
+  "nodes": [
+    {"id": "start", "type": "core.manual_trigger", "config": {"payload": {"files_to_move": 3}}},
+    {"id": "gate", "type": "core.approval_gate", "config": {"summary": "Continue and finish the workflow?", "details": {"why": "demo"}}},
+    {"id": "finish", "type": "core.transform", "config": {"operation": "to_string"}}
+  ],
+  "edges": [
+    {"source": "start", "source_port": "payload", "target": "gate", "target_port": "value"},
+    {"source": "gate", "source_port": "result", "target": "finish", "target_port": "value"}
+  ]
+}

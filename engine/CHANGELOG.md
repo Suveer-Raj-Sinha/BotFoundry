@@ -5,6 +5,93 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.9.1] - 2026-10-23
+
+### Fixed
+- Run history could list in the wrong order. Runs started within the same clock tick (about 15 ms on Windows)
+  share a timestamp, and ties were broken by the random run id, so "newest first" was not guaranteed. Ties are now
+  broken by insertion order. Found by the test suite on Windows; reproduced deterministically by a new test that
+  gives several runs identical timestamps.
+
+### Tests
+- Command-line tests no longer let the child process inherit the developer's terminal (`stdin` is now empty). On
+  Windows a real terminal made the unattended-approval test start asking questions. Reproduced with a
+  pseudo-terminal before fixing.
+- Two assertions compared resolved paths with exact capitalization; Windows reports a folder's real on-disk
+  capitalization, so they now compare ignoring case. (Engine behavior was correct.)
+
+## [0.9.0] - 2026-10-23
+
+### Added
+- Rulebook enforcement, Phase 2.2 (`docs/rulebook.md`):
+  - A workflow whose nodes declare permissions must have a `bot_id` with a Rulebook, or the run is refused
+    (API 422 `rulebook_required`; engine validation issue `rulebook.required`). Nothing is created or run.
+  - The bot's latest Rulebook is **pinned for the run**; it is re-validated under today's system rules first
+    (422 `rulebook_invalid` if it no longer passes). Runs record the bot and version they followed
+    (`run_created` event, `runs.rulebook_bot_id` and `rulebook_version`, API responses).
+  - Before a node runs, every permission it declares is checked: denied means `permission.denied` and none of
+    its code runs. `ask` pauses for approval. System limits cap whatever the Rulebook says.
+  - Node hooks: `ctx.authorize(permission, paths)` (returns resolved paths; refuses outside, forbidden and
+    protected paths), `await ctx.request_approval(...)`, `ctx.budget.consume_files(n)` (`max_files_per_run`
+    across the whole run). A node cannot authorize a permission it did not declare.
+  - `max_run_seconds` is enforced (`run.time_limit`).
+- Approvals: runs pause in `waiting_approval` until answered; **no answer within the Rulebook's timeout is a
+  denial**. A denial fails the node (`node.approval_denied`). Events `approval_requested`, `approval_granted`
+  and `approval_denied` are now emitted. The person's free-text `note` is kept separate from the engine's
+  outcome `reason` so text can never pose as an outcome. A run never ends with an open question
+  (cancel, failure and crash recovery all close them as denied).
+- Waiting for a person does not count against a node's timeout or the run's time limit.
+- API: `GET /approvals` (inbox), `GET /runs/{id}/approvals`, `POST /runs/{id}/approvals/{approval_id}`;
+  run detail now includes `pending_approvals` and `rulebook_bot_id`.
+- Built-in `core.approval_gate` node; `examples/approval.workflow.json`.
+- CLI: `run --approve ask|yes|no` (default asks on the terminal; with no terminal it denies) and
+  `run --rulebook FILE`; the bot's saved Rulebook is found automatically.
+- Crash recovery understands `waiting_approval`: such runs fail as `run.interrupted` and their open requests are
+  closed with a recorded denial.
+- 50 new tests (372 in total). Sixteen deliberate breakages of the enforcement, approval, clock, budget, API and
+  recovery behavior are all caught.
+
+### Changed
+- `Run(...)` takes optional `rulebook`, `rulebook_version`, `constraints` and `approval_timeout`; `RunManager`
+  takes `constraints`; `create_app(settings, storage, registry, constraints)`.
+- Running nodes are checked every 50 ms for timeout, run limit and cancellation (previously one exact deadline).
+- The frozen-engine smoke test also pauses at an approval gate, answers it, and checks a second answer is refused.
+
+### Fixed
+- A CLI test assumed POSIX paths and failed on Windows (the engine behaved correctly: `path.not_absolute`).
+  It now uses a path that is absolute on the current system.
+
+## [0.8.0] - 2026-10-20
+
+### Added
+- Rulebooks, Phase 2.1 (`docs/rulebook.md`): one versioned JSON document per bot with approved and forbidden
+  folders, a policy per permission (allow, ask, deny), a default policy, limits and an approval timeout.
+  - Permission vocabulary with risk levels and **system limits no Rulebook can exceed**: `fs.delete` and
+    `network.access` denied, `process.run_tests` at most `ask`.
+  - Validation with conflict detection: unknown permissions (typos), policies above the system limit, drive
+    roots / profile roots / protected system folders as approved folders, an approved folder entirely inside a
+    forbidden one, and warnings for risky or pointless settings. A Rulebook with any error cannot be saved.
+  - Immutable versions: saving identical content creates no new version; nothing is edited or deleted.
+  - Evaluator: allow, ask or deny for a permission and paths; never more permissive than the system limits
+    or the Rulebook; no Rulebook means no permission.
+  - Path authorization (`rules/paths.py`): Windows-correct lexical rules (case-insensitivity, trailing
+    dots and spaces, `\\?\` prefixes, reserved device names, alternate data streams, 8.3 short names, UNC,
+    whole-component containment) plus a physical check that follows symlinks and junctions.
+  - API: `GET /permissions`, `POST /rulebooks/validate`, `GET /rulebooks[/{bot}[/versions[/{n}]]]`,
+    `PUT /rulebooks/{bot}`, `POST /rulebooks/{bot}/evaluate`. CLI: `rulebook validate` and `rulebook check`
+    (exit code 3 means "needs approval"). Example: `examples/downloads-cleaner.rulebook.json`.
+  - Migration 2: `rulebook_versions` table and `runs.rulebook_bot_id`.
+- `WorkflowDefinition.bot_id` (optional) names the bot whose Rulebook governs a workflow. Existing
+  workflows are unaffected.
+- The engine protects its own data folder (the database) from bots.
+- The frozen-engine smoke test also saves a Rulebook, checks an over-permissive one is refused and checks
+  decisions end to end.
+- 130 new tests (322 in total; the 3 that use real Windows junctions and symlinks only run on Windows).
+  Seventeen deliberate breakages of path, evaluator, validation, storage and API behavior are all caught.
+
+### Not yet
+- Rulebooks are **not enforced during runs yet**; that, and approval gates, are Phase 2.2.
+
 ## [0.7.1] - 2026-10-20
 
 ### Fixed

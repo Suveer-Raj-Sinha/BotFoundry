@@ -3,7 +3,10 @@ import asyncio
 import logging
 from collections import OrderedDict
 
+from .rules.constraints import SystemConstraints
+from .rules.models import Rulebook
 from .storage.repository import RunPersister, Storage
+from .workflow.approvals import Approval
 from .workflow.definition import WorkflowDefinition
 from .workflow.registry import NodeRegistry
 from .workflow.runner import Run
@@ -15,25 +18,32 @@ class TooManyActiveRuns(Exception):
     pass
 
 
+class RunNotActive(Exception):
+    """The run has finished (or never existed in this engine session), so it cannot be answered or cancelled."""
+
+
 class RunManager:
     """Owns every run started through the API. Must be used from inside the engine's event loop."""
 
     def __init__(self, registry: NodeRegistry, storage: Storage, max_active: int = 8,
-                 remember_persisters: int = 200) -> None:
+                 remember_persisters: int = 200, constraints: SystemConstraints | None = None) -> None:
         self.registry = registry
         self.storage = storage
+        self.constraints = constraints
         self.max_active = max_active
         self._active: dict[str, Run] = {}
         self._tasks: dict[str, "asyncio.Task[None]"] = {}
         self._persisters: "OrderedDict[str, RunPersister]" = OrderedDict()
         self._remember = remember_persisters
 
-    def start(self, definition: WorkflowDefinition) -> Run:
-        """Create, persist and schedule a run. Raises if too many are active or the database
-        cannot record the run (then nothing is started)."""
+    def start(self, definition: WorkflowDefinition, *, rulebook: Rulebook | None = None,
+              rulebook_version: int | None = None) -> Run:
+        """Create, persist and schedule a run under the given Rulebook (pinned for the whole run). Raises if
+        too many are active or the database cannot record the run (then nothing is started)."""
         if len(self._active) >= self.max_active:
             raise TooManyActiveRuns(f"{self.max_active} runs are already active; wait for one to finish or cancel one.")
-        run = Run(definition, self.registry)
+        run = Run(definition, self.registry, rulebook=rulebook, rulebook_version=rulebook_version,
+                  constraints=self.constraints)
         persister = self.storage.attach(run)  # may raise: then the run never starts
         self._persisters[run.run_id] = persister
         while len(self._persisters) > self._remember:
@@ -66,6 +76,22 @@ class RunManager:
             return False
         run.cancel()
         return True
+
+    def respond(self, run_id: str, approval_id: str, approve: bool, note: str | None = None) -> Approval:
+        """Answer an approval request of an active run (ApprovalNotFound / ApprovalNotPending from the run)."""
+        run = self._active.get(run_id)
+        if run is None:
+            raise RunNotActive(run_id)
+        return run.respond(approval_id, approve, note)
+
+    def pending_approvals(self) -> list[dict]:
+        """Everything currently waiting for a person, across all active runs."""
+        items = []
+        for run in self._active.values():
+            for approval in run.pending_approvals():
+                items.append({**approval.to_dict(), "workflow_id": run.definition.id,
+                              "workflow_name": run.definition.name})
+        return sorted(items, key=lambda a: a["requested_at"])
 
     def persistence_errors(self, run_id: str) -> list[str]:
         """Problems saving this run's history (empty when everything was recorded)."""

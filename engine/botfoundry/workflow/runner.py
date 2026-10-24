@@ -4,20 +4,26 @@ Failure policy: the first failed node stops the run; nodes that never ran are ma
 with the reason recorded. Nothing is ever reported as successful unless it actually ran."""
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Sequence
 
+from ..rules.constraints import SystemConstraints, default_constraints
+from ..rules.evaluate import evaluate_action
+from ..rules.models import Rulebook
+from ..rules.permissions import Policy, known_permission_names
+from .approvals import Approval, ApprovalNotFound, ApprovalNotPending, ApprovalStatus
 from .definition import NodeInstance, WorkflowDefinition
 from .events import EventLog, EventType
-from .node import CancelToken, NodeContext, NodeError, NodeResult, NodeSpec, RunCancelled
+from .node import CancelToken, NodeContext, NodeError, NodeResult, NodeSpec, RunBudget, RunCancelled
 from .registry import NodeRegistry
 from .types import matches_type
-from .validation import validate_workflow
+from .validation import Severity, ValidationIssue, validate_workflow
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +32,7 @@ class RunStatus(str, Enum):
     CREATED = "created"
     VALIDATING = "validating"
     RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -34,6 +41,7 @@ class RunStatus(str, Enum):
 class NodeStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -42,6 +50,13 @@ class NodeStatus(str, Enum):
 
 class _Timeout(Exception):
     pass
+
+
+class _RunTimeLimit(Exception):
+    pass
+
+
+_TICK = 0.05  # how often a running node is checked against its timeout, the run limit and cancellation
 
 
 def _now() -> datetime:
@@ -97,9 +112,26 @@ class Run:
     """One execution of one workflow. Create it, optionally subscribe to `events`, then `await execute()`.
     `cancel()` is safe to call at any time and from any thread."""
 
-    def __init__(self, definition: WorkflowDefinition, registry: NodeRegistry, run_id: str | None = None) -> None:
+    def __init__(self, definition: WorkflowDefinition, registry: NodeRegistry, run_id: str | None = None, *,
+                 rulebook: Rulebook | None = None, rulebook_version: int | None = None,
+                 constraints: SystemConstraints | None = None, approval_timeout: float | None = None) -> None:
         self.definition = definition
         self.registry = registry
+        # The Rulebook is pinned for the whole run: saving a newer version mid-run changes nothing here.
+        self.rulebook = rulebook
+        self.rulebook_version = rulebook_version
+        self.rulebook_bot_id = rulebook.bot_id if rulebook else None
+        self.constraints = constraints or default_constraints()
+        self.budget = RunBudget(max_files=rulebook.limits.max_files_per_run if rulebook else None)
+        self._run_limit = rulebook.limits.max_run_seconds if rulebook else None
+        self._approval_timeout = approval_timeout or (rulebook.approval.timeout_seconds if rulebook else 300)
+        self._known_permissions = known_permission_names(p for spec in registry.all() for p in spec.permissions)
+        self._approvals: dict[str, Approval] = {}
+        self._approval_lock = threading.Lock()
+        self._approval_counter = 0
+        self._pause_depth = 0  # >0 while waiting for a person: run and node clocks stand still
+        self._active = 0.0
+        self._last: float | None = None
         self.run_id = run_id or uuid.uuid4().hex
         self.status = RunStatus.CREATED
         self.error: dict[str, Any] | None = None
@@ -113,7 +145,8 @@ class Run:
         self._started = False
         self._t0 = time.monotonic()
         self.events.append(EventType.RUN_CREATED, payload={
-            "workflow_id": definition.id, "workflow_name": definition.name, "node_count": len(definition.nodes)})
+            "workflow_id": definition.id, "workflow_name": definition.name, "node_count": len(definition.nodes),
+            "rulebook": {"bot_id": self.rulebook_bot_id, "version": rulebook_version} if rulebook else None})
 
     # ---- public ---------------------------------------------------------------------------
     def cancel(self) -> None:
@@ -134,8 +167,32 @@ class Run:
             "run_id": self.run_id, "workflow_id": self.definition.id, "status": self.status.value,
             "error": self.error, "created_at": self.created_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "rulebook": {"bot_id": self.rulebook_bot_id, "version": self.rulebook_version} if self.rulebook else None,
+            "pending_approvals": [a.to_dict() for a in self._approvals.values() if a.status == ApprovalStatus.PENDING],
             "nodes": {k: v.to_dict() for k, v in self.nodes.items()},
         }
+
+    def pending_approvals(self) -> list[Approval]:
+        return [a for a in self._approvals.values() if a.status == ApprovalStatus.PENDING]
+
+    def respond(self, approval_id: str, approve: bool, note: str | None = None) -> Approval:
+        """Answer an approval request. Safe from any thread. `note` is free text kept with the answer.
+        Raises ApprovalNotFound / ApprovalNotPending."""
+        approval = self._approvals.get(approval_id)
+        if approval is None:
+            raise ApprovalNotFound(f"This run has no approval '{approval_id}'.")
+        if not self._decide(approval, approve, "approved" if approve else "denied", decided_by="user", note=note):
+            raise ApprovalNotPending(f"Approval '{approval_id}' was already answered ({approval.status.value}).")
+        loop, future = self._loop, approval.future
+        if loop is not None and future is not None:  # wake the run that is waiting
+            def wake() -> None:
+                if not future.done():
+                    future.set_result(approval.status == ApprovalStatus.GRANTED)
+            try:
+                loop.call_soon_threadsafe(wake)
+            except RuntimeError:  # loop already closed; the decision itself is recorded
+                pass
+        return approval
 
     async def execute(self) -> "Run":
         if self._started:
@@ -163,6 +220,14 @@ class Run:
         self.status = RunStatus.VALIDATING
         self.events.append(EventType.VALIDATION_STARTED)
         result = validate_workflow(self.definition, self.registry)
+        if result.required_permissions and self.rulebook is None:
+            needed = ", ".join(result.required_permissions)
+            reason = ("This workflow has no bot_id" if self.definition.bot_id is None
+                      else f"Bot '{self.definition.bot_id}' has no Rulebook")
+            result.issues.append(ValidationIssue(
+                code="rulebook.required", severity=Severity.ERROR,
+                message=f"{reason}, but its nodes need permissions ({needed}). Set bot_id and save a Rulebook "
+                        "for that bot before running."))
         if not result.ok:
             self.events.append(EventType.VALIDATION_FAILED,
                                payload={"issues": [i.model_dump(mode="json") for i in result.issues]})
@@ -187,6 +252,7 @@ class Run:
         outputs: dict[str, dict[str, Any]] = {}
 
         self.status = RunStatus.RUNNING
+        self._last = time.monotonic()  # the run clock starts here
         for position, node in enumerate(order):
             if self.cancel_token.cancelled:
                 self._finish_cancelled("Cancelled between nodes.", [n.id for n in order[position:]])
@@ -222,9 +288,12 @@ class Run:
             # run the node
             self._start(record, node)
             t0 = time.monotonic()
-            ctx = NodeContext(run_id=self.run_id, node_id=node.id, cancel=self.cancel_token,
-                              report_progress=self._progress_callback(node.id))
             try:
+                permitted = await self._enforce_permissions(node, spec)  # deny / ask happen BEFORE any code runs
+                ctx = NodeContext(run_id=self.run_id, node_id=node.id, cancel=self.cancel_token,
+                                  report_progress=self._progress_callback(node.id),
+                                  authorize=self._authorizer(node.id, spec, permitted),
+                                  request_approval=self._approval_requester(node.id), budget=self.budget)
                 result = await self._call_handler(spec, ctx, configs[node.id], inputs)
                 problem = self._check_result(spec, result)
                 if problem is not None:
@@ -235,6 +304,13 @@ class Run:
                 record.reason = "Cancelled while running."
                 self._finish_cancelled("Cancelled while a node was running.", [n.id for n in order[position + 1:]],
                                        running_node=node.id)
+                return
+            except _RunTimeLimit:
+                limit = self._run_limit
+                self._fail_node(record, {"code": "run.time_limit", "details": {"max_run_seconds": limit},
+                                         "message": f"The run exceeded the {limit:g}s limit in the bot's Rulebook."},
+                                time.monotonic() - t0)
+                self._stop_after_failure(order, position, node.id)
                 return
             except _Timeout:
                 self._fail_node(record, {"code": "node.timeout", "details": {"timeout_seconds": spec.timeout_seconds},
@@ -281,11 +357,14 @@ class Run:
         task = asyncio.ensure_future(spec.handler(ctx, config, inputs))
         cancel_waiter = asyncio.ensure_future(self._cancel_event.wait())
         waiting = {task, cancel_waiter}
-        deadline = time.monotonic() + spec.timeout_seconds
+        node_active, last = 0.0, time.monotonic()
         try:
             while True:
-                done, _ = await asyncio.wait(waiting, timeout=max(deadline - time.monotonic(), 0),
-                                             return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(waiting, timeout=_TICK, return_when=asyncio.FIRST_COMPLETED)
+                now = time.monotonic()
+                if self._pause_depth == 0:  # time spent waiting for a person never counts against the node
+                    node_active += now - last
+                last = now
                 if task in done:
                     return task.result()
                 if cancel_waiter in done:
@@ -294,13 +373,151 @@ class Run:
                         raise _CancelledWhileRunning()
                     waiting = {task}  # not cancellable: let it finish, honor the cancel afterwards
                     continue
-                await self._abort(task)  # nothing finished before the deadline
-                raise _Timeout()
+                if node_active >= spec.timeout_seconds:
+                    await self._abort(task)
+                    raise _Timeout()
+                if self._run_limit is not None and self._active_seconds() >= self._run_limit:
+                    await self._abort(task)
+                    raise _RunTimeLimit()
         except asyncio.CancelledError:
             await self._abort(task)  # the whole run task was cancelled: do not leave the handler running
             raise
         finally:
             cancel_waiter.cancel()
+
+    # ---- permissions and approvals ----------------------------------------------------------
+    def _active_seconds(self) -> float:
+        """Run time that counts against max_run_seconds (excludes time spent waiting for a person)."""
+        now = time.monotonic()
+        if self._last is not None and self._pause_depth == 0:
+            self._active += now - self._last
+        self._last = now
+        return self._active
+
+    async def _enforce_permissions(self, node: NodeInstance, spec: NodeSpec) -> set[str]:
+        """Check every permission the node declares against the pinned Rulebook and the system limits.
+        Denied: the node fails and nothing runs. Needs approval: the run pauses until a person answers.
+        Returns the permissions the node may use."""
+        permitted: set[str] = set()
+        asks: list[str] = []
+        for permission in sorted(spec.permissions):
+            decision = evaluate_action(self.rulebook, self.constraints, permission, (),
+                                       known_permissions=self._known_permissions)
+            if decision.outcome == Policy.DENY:
+                raise NodeError("permission.denied", decision.message,
+                                {"permission": permission, "reason": decision.code})
+            if decision.outcome == Policy.ASK:
+                asks.append(permission)
+            permitted.add(permission)
+        if asks:
+            approval = await self._request_approval(
+                node.id, "node_permissions",
+                f"Node '{node.id}' ({spec.title}) needs your approval to use: {', '.join(asks)}.",
+                {"node_type": node.type, "permissions": asks})
+            self._require_granted(approval)
+        return permitted
+
+    def _require_granted(self, approval: Approval) -> None:
+        if approval.status == ApprovalStatus.GRANTED:
+            return
+        if approval.reason == "cancelled":
+            raise _CancelledWhileRunning()
+        why = {"timeout": "nobody answered in time", "denied": "it was denied"}.get(approval.reason or "", approval.reason)
+        note = f": {approval.note}" if approval.note else ""
+        raise NodeError("node.approval_denied", f"Approval was not given ({why}{note}).",
+                        {"approval_id": approval.approval_id, "reason": approval.reason, "note": approval.note})
+
+    def _authorizer(self, node_id: str, spec: NodeSpec, permitted: set[str]):
+        def authorize(permission: str, paths: Sequence[str] = ()) -> list[str]:
+            if permission not in spec.permissions:
+                raise NodeError("permission.undeclared",
+                                f"Node '{node_id}' did not declare the permission '{permission}'.",
+                                {"permission": permission})
+            if permission not in permitted:
+                raise NodeError("permission.denied", f"'{permission}' is not permitted for this node.",
+                                {"permission": permission})
+            decision = evaluate_action(self.rulebook, self.constraints, permission, paths,
+                                       known_permissions=self._known_permissions)
+            if decision.outcome == Policy.DENY:
+                raise NodeError(decision.code, decision.message, {
+                    "permission": permission,
+                    "refused_paths": [p.model_dump(mode="json") for p in decision.paths if not p.allowed]})
+            # allow, or ask that was already approved for this node before it started
+            return [p.resolved or p.path for p in decision.paths]
+        return authorize
+
+    def _approval_requester(self, node_id: str):
+        async def request(summary: str, details: dict[str, Any] | None = None,
+                          timeout_seconds: float | None = None) -> None:
+            approval = await self._request_approval(node_id, "explicit", summary, details or {}, timeout_seconds)
+            if approval.status != ApprovalStatus.GRANTED:
+                if approval.reason == "cancelled":
+                    raise RunCancelled()
+                self._require_granted(approval)
+        return request
+
+    async def _request_approval(self, node_id: str, kind: str, summary: str, details: dict[str, Any],
+                                timeout_seconds: float | None = None) -> Approval:
+        """Pause until a person answers. No answer within the timeout is a DENIAL."""
+        timeout = timeout_seconds or self._approval_timeout
+        now = _now()
+        with self._approval_lock:
+            self._approval_counter += 1
+            approval = Approval(approval_id=f"ap-{self._approval_counter}", run_id=self.run_id, node_id=node_id,
+                                kind=kind, summary=summary, details=details, requested_at=now,
+                                expires_at=now + timedelta(seconds=timeout),
+                                future=asyncio.get_running_loop().create_future())
+            self._approvals[approval.approval_id] = approval
+        record = self.nodes[node_id]
+        self._active_seconds()
+        self._pause_depth += 1
+        record.status = NodeStatus.WAITING_APPROVAL
+        if self.status == RunStatus.RUNNING:
+            self.status = RunStatus.WAITING_APPROVAL
+        self.events.append(EventType.APPROVAL_REQUESTED, node_id, {
+            "approval_id": approval.approval_id, "kind": kind, "summary": summary, "details": details,
+            "timeout_seconds": timeout, "expires_at": approval.expires_at.isoformat()})
+        cancel_waiter = asyncio.ensure_future(self._cancel_event.wait())
+        try:
+            done, _ = await asyncio.wait({approval.future, cancel_waiter}, timeout=timeout,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if approval.future not in done:  # nobody answered
+                self._decide(approval, False, "cancelled" if cancel_waiter in done else "timeout", decided_by="engine")
+        except asyncio.CancelledError:
+            self._decide(approval, False, "cancelled", decided_by="engine")
+            raise
+        finally:
+            cancel_waiter.cancel()
+            self._active_seconds()
+            self._pause_depth = max(0, self._pause_depth - 1)
+            if not self.pending_approvals() and self.status == RunStatus.WAITING_APPROVAL:
+                self.status = RunStatus.RUNNING
+            if record.status == NodeStatus.WAITING_APPROVAL:
+                record.status = NodeStatus.RUNNING
+        return approval
+
+    def _decide(self, approval: Approval, approve: bool, reason: str, *, decided_by: str, note: str | None = None) -> bool:
+        """Record the outcome exactly once. Returns False if it was already decided."""
+        with self._approval_lock:
+            if approval.status != ApprovalStatus.PENDING:
+                return False
+            approval.status = ApprovalStatus.GRANTED if approve else ApprovalStatus.DENIED
+            approval.reason = reason
+            approval.note = note
+            approval.decided_at = _now()
+        if approve:
+            self.events.append(EventType.APPROVAL_GRANTED, approval.node_id,
+                               {"approval_id": approval.approval_id, "decided_by": decided_by, "reason": reason,
+                                "note": note})
+        else:
+            self.events.append(EventType.APPROVAL_DENIED, approval.node_id,
+                               {"approval_id": approval.approval_id, "decided_by": decided_by, "reason": reason,
+                                "note": note})
+        return True
+
+    def _close_open_approvals(self, reason: str) -> None:
+        for approval in self.pending_approvals():  # a run never ends with an unanswered question
+            self._decide(approval, False, reason, decided_by="engine")
 
     @staticmethod
     async def _abort(task: "asyncio.Future[Any]") -> None:
@@ -368,13 +585,14 @@ class Run:
     def _settle_running_nodes(self, status: NodeStatus, reason: str, error: dict[str, Any] | None = None) -> None:
         """Invariant: when a run ends, no node may still be marked running."""
         for record in self.nodes.values():
-            if record.status == NodeStatus.RUNNING:
+            if record.status in (NodeStatus.RUNNING, NodeStatus.WAITING_APPROVAL):
                 record.status = status
                 record.reason = reason
                 record.error = error
                 record.finished_at = _now()
 
     def _finish_failed(self, error: dict[str, Any], failed_node: str | None) -> None:
+        self._close_open_approvals("run_failed")
         self._settle_running_nodes(NodeStatus.FAILED, "The run ended while this node was running.",
                                    {"code": "node.aborted", "details": {},
                                     "message": "The run ended while this node was running."})
@@ -385,6 +603,7 @@ class Run:
             "error": error, "failed_node": failed_node, "duration_ms": self._duration_ms()})
 
     def _finish_cancelled(self, reason: str, unstarted: list[str] | None = None, running_node: str | None = None) -> None:
+        self._close_open_approvals("cancelled")
         self._settle_running_nodes(NodeStatus.CANCELLED, "Cancelled while running.")
         cancelled = []
         for node_id in unstarted if unstarted is not None else list(self.nodes):

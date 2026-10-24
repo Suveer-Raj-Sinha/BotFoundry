@@ -139,7 +139,7 @@ def test_engine_without_a_database_still_serves_nodes_and_health():
 def test_node_catalog(env):
     client, _, _ = env
     nodes = {n["id"]: n for n in client.get("/nodes", headers=H).json()["nodes"]}
-    assert set(nodes) == {"core.manual_trigger", "core.condition", "core.transform", "core.wait"}
+    assert set(nodes) == {"core.manual_trigger", "core.condition", "core.transform", "core.wait", "core.approval_gate"}
     assert "operator" in nodes["core.condition"]["config_schema"]["properties"]
     assert nodes["core.wait"]["outputs"][0]["name"] == "result"
 
