@@ -157,7 +157,9 @@ BUILTIN_NODES = (MANUAL_TRIGGER, CONDITION, TRANSFORM, WAIT, APPROVAL_GATE)
 
 
 def build_default_registry() -> NodeRegistry:
+    from ..files.nodes import FILE_NODES  # imported here to avoid a circular import
+
     registry = NodeRegistry()
-    for spec in BUILTIN_NODES:
+    for spec in BUILTIN_NODES + FILE_NODES:
         registry.register(spec)
     return registry
