@@ -25,6 +25,32 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+MAX_STORED_OUTPUT_BYTES = 256 * 1024  # per node; larger outputs are stored as a preview (the run itself keeps all of it)
+_PREVIEW_ITEMS = 20
+
+
+def stored_outputs(outputs: dict[str, Any], limit: int = MAX_STORED_OUTPUT_BYTES) -> dict[str, Any]:
+    """What to save of a node's outputs. Small outputs are kept whole. When the total is too big, the biggest
+    ports are replaced by an honest preview that says what was left out; nothing is silently cut."""
+    total = len(_dumps(outputs))
+    if total <= limit:
+        return outputs
+    sizes = {port: len(_dumps(value)) for port, value in outputs.items()}
+    budget = limit // max(len(outputs), 1)
+    stored: dict[str, Any] = {}
+    for port, value in outputs.items():
+        if sizes[port] <= budget:
+            stored[port] = value
+        elif isinstance(value, list):
+            stored[port] = {"_truncated": True, "length": len(value), "bytes": sizes[port],
+                            "preview": value[:_PREVIEW_ITEMS]}
+        elif isinstance(value, dict):
+            stored[port] = {"_truncated": True, "bytes": sizes[port], "keys": sorted(value)[:100]}
+        else:
+            stored[port] = {"_truncated": True, "bytes": sizes[port], "preview": str(value)[:1000]}
+    return stored
+
+
 def _loads(text: str | None) -> Any:
     return None if text is None else json.loads(text)
 
@@ -311,6 +337,6 @@ class RunPersister:
                ON CONFLICT(run_id, node_id) DO UPDATE SET status=excluded.status, outputs=excluded.outputs,
                  summary=excluded.summary, error=excluded.error, reason=excluded.reason,
                  started_at=excluded.started_at, finished_at=excluded.finished_at""",
-            (self.run.run_id, record.node_id, record.type, record.status.value, _dumps(record.outputs),
+            (self.run.run_id, record.node_id, record.type, record.status.value, _dumps(stored_outputs(record.outputs)),
              record.summary, _dumps(record.error) if record.error else None, record.reason,
              _iso(record.started_at), _iso(record.finished_at)))
