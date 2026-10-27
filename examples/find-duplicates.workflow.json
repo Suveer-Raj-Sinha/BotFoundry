@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "find-duplicates",
+  "name": "Find duplicate downloads",
+  "description": "Read-only. Edit the folder (and use a Rulebook that approves it, e.g. examples/downloads-cleaner.rulebook.json with your user name), then: botfoundry run examples/find-duplicates.workflow.json --rulebook examples/downloads-cleaner.rulebook.json --no-save",
+  "bot_id": "downloads-cleaner",
+  "nodes": [
+    {"id": "start", "type": "core.manual_trigger"},
+    {"id": "scan", "type": "files.scan_folder", "config": {"folder": "C:\\Users\\YourName\\Downloads"}},
+    {"id": "hash", "type": "files.hash", "config": {"skip_unique_sizes": true}},
+    {"id": "dups", "type": "files.find_duplicates", "config": {"keep": "oldest"}}
+  ],
+  "edges": [
+    {"source": "start", "source_port": "payload", "target": "scan", "target_port": "start"},
+    {"source": "scan", "source_port": "items", "target": "hash", "target_port": "items"},
+    {"source": "hash", "source_port": "items", "target": "dups", "target_port": "items"}
+  ]
+}

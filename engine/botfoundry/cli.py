@@ -6,6 +6,8 @@
     botfoundry validate FILE [--json]                        check a workflow file
     botfoundry run FILE [--data-dir D] [--no-save] [--json] [--rulebook R] [--approve ask|yes|no]
                                                              run a workflow file, printing events live
+    botfoundry duplicates FOLDER [--keep ...] [--min-size N] [--json]
+                                                             find duplicate files in a folder (read-only)
     botfoundry rulebook validate FILE [--json]               check a Rulebook file
     botfoundry rulebook check FILE PERMISSION [PATH ...]     ask what the Rulebook would decide
 
@@ -366,8 +368,109 @@ def cmd_rulebook(argv: list[str]) -> int:
     return {Policy.ALLOW: EXIT_OK, Policy.ASK: 3, Policy.DENY: EXIT_FAILED}[decision.outcome]
 
 
+# ---- duplicates ----------------------------------------------------------------------------
+def cmd_duplicates(argv: list[str]) -> int:
+    from .files.duplicates import KEEP_STRATEGIES
+    from .files.items import format_size
+    from .rules.constraints import default_constraints
+    from .rules.models import Rulebook
+    from .rules.permissions import Policy, known_permission_names
+    from .rules.validation import validate_rulebook
+    from .workflow.definition import WorkflowDefinition
+
+    parser = argparse.ArgumentParser(prog="botfoundry duplicates",
+                                     description="Find duplicate files in a folder. Read-only: nothing is moved, "
+                                                 "changed or deleted.")
+    parser.add_argument("folder", type=Path)
+    parser.add_argument("--no-recursive", action="store_true", help="Only look at the folder itself.")
+    parser.add_argument("--include-hidden", action="store_true", help="Include hidden and system files.")
+    parser.add_argument("--min-size", type=int, default=1, metavar="BYTES", help="Ignore files smaller than this.")
+    parser.add_argument("--keep", choices=KEEP_STRATEGIES, default="oldest", help="Which copy to suggest keeping.")
+    parser.add_argument("--top", type=int, default=10, help="How many groups to show (largest waste first).")
+    parser.add_argument("--json", action="store_true", help="Print the full result as JSON.")
+    args = parser.parse_args(argv)
+
+    folder = args.folder.expanduser().resolve()
+    if not folder.is_dir():
+        raise CliError(f"Not a folder: {folder}")
+
+    registry = build_default_registry()
+    constraints = default_constraints()
+    rulebook = Rulebook(bot_id="cli-duplicates", name="Duplicate finder (read-only)", allowed_folders=[str(folder)],
+                        permissions={"fs.read": Policy.ALLOW})
+    known = known_permission_names(p for spec in registry.all() for p in spec.permissions)
+    check = validate_rulebook(rulebook, constraints, known)
+    if not check.ok:
+        print(f"Not scanning {folder}:", file=sys.stderr)
+        _print_issues(check, sys.stderr)
+        return EXIT_FAILED
+
+    nodes: list[dict[str, Any]] = [
+        {"id": "start", "type": "core.manual_trigger"},
+        {"id": "scan", "type": "files.scan_folder", "config": {"folder": str(folder), "recursive": not args.no_recursive,
+                                                              "include_hidden": args.include_hidden}}]
+    edges = [{"source": "start", "source_port": "payload", "target": "scan", "target_port": "start"}]
+    feed = ("scan", "items")
+    if args.min_size > 1:
+        nodes.append({"id": "big_enough", "type": "files.filter", "config": {"min_size": args.min_size}})
+        edges.append({"source": "scan", "source_port": "items", "target": "big_enough", "target_port": "items"})
+        feed = ("big_enough", "matched")
+    nodes += [{"id": "hash", "type": "files.hash", "config": {"skip_unique_sizes": True}},
+              {"id": "dups", "type": "files.find_duplicates", "config": {"keep": args.keep}}]
+    edges += [{"source": feed[0], "source_port": feed[1], "target": "hash", "target_port": "items"},
+              {"source": "hash", "source_port": "items", "target": "dups", "target_port": "items"}]
+    definition = WorkflowDefinition.model_validate({"id": "cli-duplicates", "name": "Find duplicates", "nodes": nodes,
+                                                    "edges": edges})
+
+    run = Run(definition, registry, rulebook=rulebook, constraints=constraints)
+    if not args.json:
+        run.events.subscribe(lambda e: print(f"  {e.node_id}: {e.payload.get('message', '')}", file=sys.stderr, flush=True)
+                             if e.type == EventType.NODE_PROGRESS and e.payload.get("message") else None)
+    try:
+        asyncio.run(run.execute())
+    except KeyboardInterrupt:
+        print("Cancelled.", file=sys.stderr)
+        return EXIT_CANCELLED
+    if run.status != RunStatus.COMPLETED:
+        error = run.error or {}
+        print(f"Could not finish: {error.get('message', run.status.value)}", file=sys.stderr)
+        return EXIT_FAILED
+
+    scan, hashed, found = run.nodes["scan"].outputs, run.nodes["hash"].outputs, run.nodes["dups"].outputs
+    if args.json:
+        print(json.dumps({"folder": str(folder), "scan": scan["stats"], "hash": hashed["stats"], "skipped": scan["skipped"],
+                          "failed": hashed["failed"], "duplicates": found}, indent=2))
+        return EXIT_OK
+    s, h, d = scan["stats"], hashed["stats"], found["stats"]
+    print(f"Scanned {s['files']} files ({format_size(s['bytes'])}) in {s['folders']} folders of {folder}")
+    print(f"Compared contents of {h['hashed']} files ({format_size(h['bytes_read'])}); "
+          f"{h['not_needed']} needed no check (unique size)")
+    for label, rows in (("Not scanned", scan["skipped"]), ("Could not be read", hashed["failed"])):
+        if rows:
+            print(f"\n{label}: {len(rows)}")
+            for row in rows[:5]:
+                print(f"  {row['path']}  ({row['reason']})")
+            if len(rows) > 5:
+                print(f"  ... and {len(rows) - 5} more (use --json for the full list)")
+    if not d["groups"]:
+        print("\nNo duplicates found.")
+    else:
+        print(f"\nFound {d['groups']} groups of duplicates: {d['duplicate_files']} redundant files wasting "
+              f"{format_size(d['wasted_bytes'])}")
+        for number, group in enumerate(found["groups"][:max(args.top, 0)], 1):
+            print(f"\n{number}. {format_size(group['size'])} x {group['count']}  (wasting {format_size(group['wasted_bytes'])})")
+            print(f"   keep: {group['keep']['path']}")
+            for extra in group["duplicates"]:
+                print(f"   dup : {extra['path']}")
+        if len(found["groups"]) > args.top:
+            print(f"\n... and {len(found['groups']) - args.top} more groups (use --top or --json)")
+    print("\nRead-only: nothing was moved, changed or deleted.")
+    return EXIT_OK
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
-    "serve": cmd_serve, "nodes": cmd_nodes, "validate": cmd_validate, "run": cmd_run, "rulebook": cmd_rulebook}
+    "serve": cmd_serve, "nodes": cmd_nodes, "validate": cmd_validate, "run": cmd_run, "rulebook": cmd_rulebook,
+    "duplicates": cmd_duplicates}
 
 _OVERVIEW = __doc__
 
