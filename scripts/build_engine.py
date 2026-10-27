@@ -113,6 +113,57 @@ def check_a_rulebook(base: str, token: str) -> None:
             raise SystemExit(f"Smoke test FAILED: {permission} should be {expected}: {status} {body}")
 
 
+def check_file_nodes(base: str, token: str) -> None:
+    """Scan, hash and find duplicates in a throw-away folder inside the build area (not a protected location)."""
+    folder = (BUILD / "smoke-files").resolve()
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
+    try:
+        (folder / "a.txt").write_text("duplicate content")
+        (folder / "b.txt").write_text("duplicate content")
+        (folder / "c.txt").write_text("something else entirely!")
+        rulebook = {"bot_id": "smoke-files", "name": "Smoke", "allowed_folders": [str(folder)],
+                    "permissions": {"fs.read": "allow"}}
+        status, body = http_call("PUT", f"{base}/rulebooks/smoke-files", token, rulebook)
+        if status != 200:
+            raise SystemExit(f"Smoke test FAILED: saving the file Rulebook returned {status}: {body}")
+        workflow = {"id": "files-smoke", "name": "Files", "bot_id": "smoke-files", "nodes": [
+            {"id": "start", "type": "core.manual_trigger"},
+            {"id": "scan", "type": "files.scan_folder", "config": {"folder": str(folder)}},
+            {"id": "hash", "type": "files.hash", "config": {"skip_unique_sizes": True}},
+            {"id": "dups", "type": "files.find_duplicates"}], "edges": [
+            {"source": "start", "source_port": "payload", "target": "scan", "target_port": "start"},
+            {"source": "scan", "source_port": "items", "target": "hash", "target_port": "items"},
+            {"source": "hash", "source_port": "items", "target": "dups", "target_port": "items"}]}
+        status, body = http_call("POST", f"{base}/runs", token, {"definition": workflow})
+        if status != 202:
+            raise SystemExit(f"Smoke test FAILED: starting the file workflow returned {status}: {body}")
+        run_id = json.loads(body)["run_id"]
+        for _ in range(100):
+            run = json.loads(http_call("GET", f"{base}/runs/{run_id}", token)[1])
+            if run["status"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
+        nodes = {n["node_id"]: n for n in run["nodes"]}
+        stats = nodes.get("dups", {}).get("outputs", {}).get("stats", {})
+        if run["status"] != "completed" or stats.get("groups") != 1 or stats.get("duplicate_files") != 1:
+            raise SystemExit(f"Smoke test FAILED: the file nodes did not find the duplicate: {run}")
+        outside = {"id": "files-smoke-2", "name": "Files", "bot_id": "smoke-files", "nodes": [
+            {"id": "start", "type": "core.manual_trigger"},
+            {"id": "scan", "type": "files.scan_folder", "config": {"folder": str(folder.parent)}}], "edges": [
+            {"source": "start", "source_port": "payload", "target": "scan", "target_port": "start"}]}
+        run_id = json.loads(http_call("POST", f"{base}/runs", token, {"definition": outside})[1])["run_id"]
+        for _ in range(100):
+            run = json.loads(http_call("GET", f"{base}/runs/{run_id}", token)[1])
+            if run["status"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
+        if run["status"] != "failed" or run["nodes"][1]["error"]["code"] != "path.outside_allowed":
+            raise SystemExit(f"Smoke test FAILED: scanning outside the approved folder was not refused: {run}")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def check_an_approval(base: str, token: str) -> None:
     """A run must pause at an approval gate, resume when answered, and refuse a second answer."""
     gate = {"id": "gate-smoke", "name": "Gate", "nodes": [
@@ -204,8 +255,9 @@ def smoke_test(exe: Path) -> None:
         run_a_workflow(f"http://127.0.0.1:{port}", token)
         check_a_rulebook(f"http://127.0.0.1:{port}", token)
         check_an_approval(f"http://127.0.0.1:{port}", token)
+        check_file_nodes(f"http://127.0.0.1:{port}", token)
         print(f"      OK: healthy after {elapsed:.1f}s, version {__version__}, database schema "
-              f"v{MIGRATIONS[-1].version}, wrong token -> 401, a workflow ran end to end, Rulebook limits enforced, an approval gate paused and resumed")
+              f"v{MIGRATIONS[-1].version}, wrong token -> 401, a workflow ran end to end, Rulebook limits enforced, an approval gate paused and resumed, file nodes found a duplicate and refused an unapproved folder")
     finally:
         stop(proc)
         log.close()

@@ -193,7 +193,7 @@ def test_serve_still_starts_with_the_original_arguments(tmp_path):
         assert body["status"] == "ok" and body["database_schema_version"] == MIGRATIONS[-1].version
         request = urllib.request.Request(f"http://127.0.0.1:{port}/nodes", headers={"X-BotFoundry-Token": TOKEN})
         with urllib.request.urlopen(request, timeout=2) as response:
-            assert len(json.loads(response.read())["nodes"]) == 5
+            assert "files.scan_folder" in {n["id"] for n in json.loads(response.read())["nodes"]}
     finally:
         proc.terminate()
         proc.wait(timeout=15)

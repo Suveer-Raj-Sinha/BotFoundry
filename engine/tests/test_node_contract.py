@@ -80,7 +80,8 @@ def test_registry_lookup_and_duplicates():
 
 def test_default_registry_contents():
     ids = [s.id for s in build_default_registry().all()]
-    assert ids == ["core.approval_gate", "core.condition", "core.manual_trigger", "core.transform", "core.wait"]
+    assert ids == ["core.approval_gate", "core.condition", "core.manual_trigger", "core.transform", "core.wait",
+                   "files.filter", "files.find_duplicates", "files.hash", "files.scan_folder"]
 
 
 # ---- cancellation token -------------------------------------------------------------------

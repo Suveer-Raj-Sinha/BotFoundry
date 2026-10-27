@@ -1,6 +1,6 @@
 # Persistence (SQLite)
 
-Status: engine 0.9.0 (Phase 1.3, migration 2 from Phase 2.1, approvals from Phase 2.2). Code: `engine/botfoundry/storage/`.
+Status: engine 0.10.0 (Phase 1.3, migration 2 from Phase 2.1, approvals from Phase 2.2, output previews from Phase 3.1). Code: `engine/botfoundry/storage/`.
 
 ## Where data lives
 `<data-dir>/botfoundry.db` (WAL mode, so you will also see `-wal` and `-shm` files while it is open).
@@ -45,7 +45,10 @@ unanswered approval requests are closed with `approval_denied` (reason `interrup
 
 ## Limits worth knowing
 - Node outputs are stored as JSON; unusual values are stored as text (`default=str`).
-- Large outputs (for example file lists from the Fixer) are not size-capped yet.
+- **Large outputs are stored as a preview.** When a node's outputs exceed 256 KB in total, the biggest ports are
+  replaced by `{"_truncated": true, "length": N, "bytes": B, "preview": [first 20 items]}` (lists), a key list
+  (objects) or the first 1,000 characters (text); small ports stay whole. Nothing is silently cut: the marker says
+  what was left out. The run itself always keeps and passes on the full data while it runs.
 - One connection with a lock: right for a single-user local app, not for a server.
 
 ## Several processes
