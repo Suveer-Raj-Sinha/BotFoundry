@@ -1,6 +1,6 @@
 # Node contract and workflow format
 
-Status: engine 0.9.0 (Phase 1.1 to 2.2). Code: `engine/botfoundry/workflow/`.
+Status: engine 0.10.0 (Phase 1.1 to 3.1). Code: `engine/botfoundry/workflow/`.
 
 ## A node (a registered, typed operation)
 Every node type is a `NodeSpec` that defines:
@@ -96,6 +96,12 @@ Exactly one of `run_completed`, `run_failed`, `run_cancelled` ends every run. Po
 | `core.transform` | data | in `value`; out `result` | `operation`: to_upper, to_lower, length, to_string |
 | `core.wait` | logic | in `value`; out `result` (same value) | `seconds` 0 to 60 (default 1) |
 | `core.approval_gate` | approval | in `value`; out `result` (same value) | `summary`, `details`. Pauses until a person approves |
+| `files.scan_folder` | files | optional `start`; out `items`, `skipped`, `stats` | `folder`, `recursive`, `max_depth`, `include_hidden`, `max_items`. Needs `fs.read` |
+| `files.filter` | data | in `items`; out `matched`, `rejected`, `stats` | extensions, names, sizes, ages |
+| `files.hash` | files | in `items`; out `items`, `failed`, `stats` | `algorithm`, `skip_unique_sizes`. Needs `fs.read` |
+| `files.find_duplicates` | data | in `items`; out `groups`, `duplicates`, `stats` | `keep`, `ignore_empty` |
+
+The file nodes are described in `docs/files.md`.
 
 ## What a node can use while it runs (`NodeContext`)
 | Hook | Purpose |

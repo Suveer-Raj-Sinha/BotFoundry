@@ -5,6 +5,36 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.10.0] - 2026-10-24
+
+### Added
+- Read-only file nodes, Phase 3.1 (`docs/files.md`):
+  - `files.scan_folder` lists an approved folder. It never follows symlinks, junctions or Windows reparse points
+    (including OneDrive placeholders, which reading would download), skips hidden/system entries unless asked,
+    skips forbidden subfolders whole, reports everything it skipped, fails (never truncates) past `max_items`, and
+    fails when the starting folder is missing or unreadable. Long Windows paths use the `\\?\` prefix.
+  - `files.hash` adds SHA-256 hashes. It re-authorizes every path before reading (a forged record cannot reach
+    outside the approved folders), refuses files that changed since the scan or while being read, and reports
+    unreadable files in `failed`. `skip_unique_sizes` skips files that cannot have a duplicate.
+  - `files.filter` splits records by extension, name, regex, size and age (with `all`/`any` and `negate`).
+  - `files.find_duplicates` groups identical content and suggests which copy to keep; it refuses records that
+    were never hashed, ignores empty files by default, and gives the same answer whatever the input order.
+  - Blocking work runs in a worker thread that is told to stop when the node is cancelled, times out, or the run's
+    task is cancelled, so the engine stays responsive and nothing keeps reading in the background.
+- `botfoundry duplicates FOLDER`: a read-only duplicate finder that builds a temporary Rulebook approving only
+  that folder (so protected, drive-root and whole-profile folders are refused) and reports duplicate groups,
+  skipped items and unreadable files.
+- Large node outputs are stored in the database as an honest preview (256 KB budget per node); the run keeps and
+  passes on the full data.
+- `examples/find-duplicates.workflow.json`.
+- 68 new tests (444 in total). Sixteen deliberate breakages of the file code were all caught; the first run flagged
+  one survivor that turned out to be stale cached bytecode in the test harness, not a gap.
+
+### Fixed (found while writing the tests)
+- A scanned record no longer carries `hash: null` from the start. That made a workflow that forgot the File Hash
+  step indistinguishable from one that skipped files on purpose, so Find Duplicates would have answered "no
+  duplicates" instead of refusing. Records now get a `hash` key only from `files.hash`.
+
 ## [0.9.2] - 2026-10-23
 
 ### Fixed

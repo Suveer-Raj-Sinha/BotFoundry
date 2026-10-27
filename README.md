@@ -26,7 +26,10 @@ own machine. No cloud account, no telemetry; AI is optional and never required.
   limits no Rulebook can exceed, Windows-aware path authorization, and a runner that checks every node's
   permissions before it runs. Actions that need approval pause the run until a person answers; no answer counts as
   a denial. Each run records the exact Rulebook version it followed (`docs/rulebook.md`).
-- 372 engine tests, 6 frontend tests; every release has a changelog.
+- **Read-only file tools:** scan a folder, filter, hash and find duplicate files through the same Rulebook
+  checks; links, junctions and cloud placeholders are never followed. Try `python -m botfoundry duplicates FOLDER`
+  (`docs/files.md`).
+- 444 engine tests, 6 frontend tests; every release has a changelog.
 
 ## Architecture
 ```
@@ -65,14 +68,15 @@ engine/      Python engine: API, workflow core (node contract, validation, runne
 apps/desktop Tauri + React desktop app
 scripts/     bump.py (versions + changelogs), build_engine.py (freeze + smoke-test the engine)
 examples/    ready-to-run workflow files
-docs/        api.md, rulebook.md, node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
+docs/        api.md, rulebook.md, files.md, node-contract.md, persistence.md, GIT_WORKFLOW.md, PROJECT_HANDOFF.md
 ```
 
 ## Roadmap
 1. **Engine core** (done): node contract, validation, runner, events, persistence, local API and CLI.
 2. **Rulebook** (done): per-bot permissions, approved folders, action policies, approval gates, enforced by
    the engine.
-3. **The Fixer:** scan, hash, find duplicates, preview, approve, move safely, recover and undo.
+3. **The Fixer** (read-only scanning, filtering, hashing and duplicate finding done; planning, previews, safe moves
+   and undo next): scan, hash, find duplicates, preview, approve, move safely, recover and undo.
 4. **Interface:** workflow canvas, live run view, history.
 5. Polish, scheduling, installer; then The Builder, optional local AI, templates.
 
@@ -83,6 +87,12 @@ cd engine
 .\.venv\Scripts\python.exe -m botfoundry validate ..\examples\branching.workflow.json
 .\.venv\Scripts\python.exe -m botfoundry run ..\examples\branching.workflow.json --no-save
 ```
+
+## Find duplicate files (read-only)
+```powershell
+.\.venv\Scripts\python.exe -m botfoundry duplicates C:\Users\YourName\Downloads
+```
+It reports duplicate groups and what was skipped; it never changes a file.
 
 ## Try an approval
 ```powershell
