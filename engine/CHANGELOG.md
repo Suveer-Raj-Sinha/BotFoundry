@@ -5,6 +5,41 @@ Format: [Keep a Changelog](https://keepachangelog.com). Versioning: 0.MINOR.PATC
 (MINOR = new capability or milestone, PATCH = fix only).
 Change versions with `python scripts/bump.py engine X.Y.Z` from the repo root.
 
+## [0.11.0] - 2026-11-25
+
+### Added
+- `files.plan_moves`, Phase 3.2 (`docs/files.md`): decides where each file WOULD go and returns a plan to review.
+  It moves nothing. Files are sorted by your own rules first (the same tests as Filter Items, plus a target
+  folder), then by file type (Images, Documents, Spreadsheets, Presentations, Archives, Audio, Video, Installers),
+  with optional year or year-month subfolders from the modified date (UTC) and an optional folder for files no
+  rule matches (otherwise they stay where they are).
+  - Never overwrites: a destination that already exists is skipped and reported. When two files want the same
+    destination, neither moves (no arbitrary winner). A file that is in the way of a category folder blocks only
+    that folder. Windows case-insensitivity applies to all of these.
+  - Never trusts a record: the file name and type come from the path itself, and every source and destination is
+    checked against the Rulebook. A refused file is skipped with the Rulebook's own reason code.
+  - Same input, same plan, in any order. `plan_id` (SHA-256 over every move, with size, modified time and hash)
+    is what a later approval should be tied to, so approving one plan can never authorize another.
+  - Output `plan` (moves, folders to create, `approval_required`, warnings), `skipped` (path, stable code, reason)
+    and `stats`. A plan larger than the Rulebook's `max_files_per_run` carries a warning; it is not trimmed.
+  - Settings are strict: an unknown or misspelled setting is a validation error, not silently ignored.
+- `ctx.preflight(permission, paths)` on the node context: asks "would the Rulebook allow this?" and does nothing.
+  It needs no declared permission and never pauses for approval, which is what lets a plan be reviewed BEFORE a
+  person is asked to approve moving anything. Steps that really change files must still declare the permission
+  and use `authorize`. A context built without a Rulebook denies everything.
+- `botfoundry organize FOLDER [--to DEST] [--rules FILE] [--no-default-rules] [--unmatched-folder NAME]
+  [--date-folders none|year|year_month] [--no-recursive] [--include-hidden] [--top N] [--json]`: previews the plan
+  through the real engine with a temporary Rulebook (read allowed, moving needs approval). Preview only: it cannot
+  move anything yet, and says so.
+- `examples/organize-downloads.workflow.json`.
+- 126 new tests (563 in total), and every deliberate breakage of the new code that is not covered by a second,
+  identical guard was caught.
+
+### Changed
+- `FilterConfig` now shares its tests with the move rules through a common `FilterCriteria` base. The published
+  JSON schema of the Filter node is unchanged.
+- `rules.paths.RESERVED_NAMES` is public so folder names can be checked against it.
+
 ## [0.10.0] - 2026-10-24
 
 ### Added

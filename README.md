@@ -8,8 +8,8 @@ own machine. No cloud account, no telemetry; AI is optional and never required.
 
 > **Status: early development.** The engine core is complete and tested: a secure local engine with an HTTP
 > API and a CLI, a workflow core (validation, execution, events) and SQLite persistence, inside a desktop
-> shell. The Rulebook, the first real bot (The Fixer, a file organizer) and the workflow editor are next.
-> See the roadmap.
+> shell. Rulebooks are enforced, and the first real bot (The Fixer, a file organizer) can scan, find duplicates and
+> plan moves; safe moves and undo are next, then the workflow editor. See the roadmap.
 
 ## What works today
 - **Desktop app** (Tauri 2 + React + TypeScript) that starts its own engine and shows live engine status.
@@ -29,7 +29,10 @@ own machine. No cloud account, no telemetry; AI is optional and never required.
 - **Read-only file tools:** scan a folder, filter, hash and find duplicate files through the same Rulebook
   checks; links, junctions and cloud placeholders are never followed. Try `python -m botfoundry duplicates FOLDER`
   (`docs/files.md`).
-- 444 engine tests, 6 frontend tests; every release has a changelog.
+- **Move planning:** decide where each file would go (your rules, then file type, optional date folders) and review
+  the plan. Nothing is overwritten, name clashes move neither file, and every path is checked against the Rulebook.
+  Try `python -m botfoundry organize FOLDER` (preview only: it cannot move files yet).
+- 563 engine tests, 6 frontend tests; every release has a changelog.
 
 ## Architecture
 ```
@@ -75,8 +78,9 @@ docs/        api.md, rulebook.md, files.md, node-contract.md, persistence.md, GI
 1. **Engine core** (done): node contract, validation, runner, events, persistence, local API and CLI.
 2. **Rulebook** (done): per-bot permissions, approved folders, action policies, approval gates, enforced by
    the engine.
-3. **The Fixer** (read-only scanning, filtering, hashing and duplicate finding done; planning, previews, safe moves
-   and undo next): scan, hash, find duplicates, preview, approve, move safely, recover and undo.
+3. **The Fixer** (read-only scanning, filtering, hashing, duplicate finding, move planning and preview done; the
+   approval gate, safe moves, recovery log and undo next): scan, hash, find duplicates, preview, approve, move
+   safely, recover and undo.
 4. **Interface:** workflow canvas, live run view, history.
 5. Polish, scheduling, installer; then The Builder, optional local AI, templates.
 
@@ -93,6 +97,13 @@ cd engine
 .\.venv\Scripts\python.exe -m botfoundry duplicates C:\Users\YourName\Downloads
 ```
 It reports duplicate groups and what was skipped; it never changes a file.
+
+## Preview how a folder would be sorted (nothing is moved)
+```powershell
+.\.venv\Scripts\python.exe -m botfoundry organize C:\Users\YourName\Downloads
+```
+It shows where each file would go (Images, Documents, ...), what it would leave alone and why, and a plan id. It
+sorts into `Downloads\Organized` unless you pass `--to`.
 
 ## Try an approval
 ```powershell
