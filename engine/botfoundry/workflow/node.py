@@ -84,6 +84,34 @@ def _deny_authorize(permission: str, paths: Sequence[str] = ()) -> list[str]:
                     {"permission": permission})
 
 
+@dataclass(frozen=True)
+class PathVerdict:
+    """Would one path be allowed? (Answer of a preflight check.)"""
+    path: str
+    allowed: bool
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class Preflight:
+    """Answer to "would this be allowed?" without doing anything.
+
+    `outcome` is about the permission itself: "allow", "ask" (every use needs a person's approval) or "deny".
+    `verdicts` has exactly one entry per path asked about, in the same order. When the permission is denied
+    outright, every verdict is a refusal with the same code."""
+    outcome: str
+    code: str
+    message: str
+    verdicts: tuple[PathVerdict, ...] = ()
+
+
+def _deny_preflight(permission: str, paths: Sequence[str] = ()) -> Preflight:
+    message = "No Rulebook context is available, so this action is denied."
+    return Preflight("deny", "rulebook.missing", message,
+                     tuple(PathVerdict(p, False, "rulebook.missing", message) for p in paths))
+
+
 async def _no_approvals(summary: str, details: dict[str, Any] | None = None, timeout_seconds: float | None = None) -> None:
     raise NodeError("approval.unavailable", "Approvals are not available in this context.")
 
@@ -99,6 +127,10 @@ class NodeContext:
     # Ask the engine whether this node may use `permission` on `paths`. Returns the RESOLVED paths to act on
     # (never the text you were given); raises NodeError when the Rulebook or the system limits say no.
     authorize: Callable[[str, Sequence[str]], list[str]] = field(default=_deny_authorize)
+    # Ask "would the Rulebook allow `permission` on these paths?" WITHOUT acting, without needing the node to
+    # declare the permission and without ever pausing for approval. For planning and previews only: the
+    # step that really changes something must still declare the permission and go through `authorize`.
+    preflight: Callable[[str, Sequence[str]], Preflight] = field(default=_deny_preflight)
     # Pause the run until a person approves; raises NodeError if denied or if nobody answers in time.
     request_approval: Callable[..., Awaitable[None]] = field(default=_no_approvals)
     budget: RunBudget = field(default_factory=RunBudget)
