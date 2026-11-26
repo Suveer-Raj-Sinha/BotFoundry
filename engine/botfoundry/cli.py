@@ -8,6 +8,8 @@
                                                              run a workflow file, printing events live
     botfoundry duplicates FOLDER [--keep ...] [--min-size N] [--json]
                                                              find duplicate files in a folder (read-only)
+    botfoundry organize FOLDER [--to DEST] [--rules FILE] [--json]
+                                                             preview how files would be sorted (moves nothing)
     botfoundry rulebook validate FILE [--json]               check a Rulebook file
     botfoundry rulebook check FILE PERMISSION [PATH ...]     ask what the Rulebook would decide
 
@@ -468,9 +470,158 @@ def cmd_duplicates(argv: list[str]) -> int:
     return EXIT_OK
 
 
+# ---- organize (preview) ---------------------------------------------------------------------
+_SKIP_TEXT = {"rule.no_match": "no rule matches them", "destination.exists": "the destination already exists",
+              "destination.collision": "two files would share a destination", "already_in_place": "already in place",
+              "date.unknown": "unknown modified date", "destination.invalid": "the destination name is unusable",
+              "destination.folder_blocked": "a file blocks the destination folder", "source.invalid": "unusable path"}
+
+
+def cmd_organize(argv: list[str]) -> int:
+    from .files.items import format_size
+    from .files.planning import DATE_MODES
+    from .rules.constraints import default_constraints
+    from .rules.models import Rulebook
+    from .rules.permissions import Policy, known_permission_names
+    from .rules.validation import validate_rulebook
+    from .workflow.definition import WorkflowDefinition
+
+    parser = argparse.ArgumentParser(
+        prog="botfoundry organize",
+        description="Preview how the files in a folder would be sorted into folders. This version only previews: "
+                    "nothing is moved, changed or deleted.")
+    parser.add_argument("folder", type=Path)
+    parser.add_argument("--to", type=Path, metavar="DEST", help="Folder to sort into (default: FOLDER/Organized).")
+    parser.add_argument("--rules", type=Path, metavar="FILE",
+                        help="JSON file with your own rules: {\"rules\": [{\"folder\": \"Invoices\", \"name_contains\": "
+                             "[\"invoice\"]}], \"use_default_rules\": true, \"unmatched_folder\": null}")
+    parser.add_argument("--no-default-rules", action="store_true", help="Do not sort by file type.")
+    parser.add_argument("--unmatched-folder", metavar="NAME", help="Move files no rule matches here (default: leave them).")
+    parser.add_argument("--date-folders", choices=DATE_MODES, help="Add year or year-month subfolders (modified date, UTC).")
+    parser.add_argument("--no-recursive", action="store_true", help="Only look at the folder itself.")
+    parser.add_argument("--include-hidden", action="store_true", help="Include hidden and system files.")
+    parser.add_argument("--top", type=int, default=10, help="How many example moves to show.")
+    parser.add_argument("--json", action="store_true", help="Print the full result as JSON.")
+    args = parser.parse_args(argv)
+
+    folder = args.folder.expanduser().resolve()
+    if not folder.is_dir():
+        raise CliError(f"Not a folder: {folder}")
+    destination = (args.to.expanduser() if args.to else folder / "Organized").resolve()
+
+    plan_config: dict[str, Any] = {}
+    if args.rules:
+        try:
+            plan_config = json.loads(args.rules.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise CliError(f"Cannot read the rules file {args.rules}: {exc}") from exc
+        if not isinstance(plan_config, dict):
+            raise CliError("The rules file must contain a JSON object.")
+        allowed_keys = {"rules", "use_default_rules", "unmatched_folder", "date_folders"}
+        unknown = sorted(set(plan_config) - allowed_keys)
+        if unknown:
+            raise CliError(f"Unknown setting(s) in the rules file: {', '.join(unknown)} (allowed: {', '.join(sorted(allowed_keys))}).")
+    if args.no_default_rules:
+        plan_config["use_default_rules"] = False
+    if args.unmatched_folder:
+        plan_config["unmatched_folder"] = args.unmatched_folder
+    if args.date_folders:
+        plan_config["date_folders"] = args.date_folders
+    plan_config["destination_root"] = str(destination)
+
+    registry = build_default_registry()
+    constraints = default_constraints()
+    inside = destination == folder or folder in destination.parents
+    approved = [str(folder)] if inside else [str(folder), str(destination)]
+    # fs.move is "ask": the preview shows what a later, approved run would have to ask about.
+    rulebook = Rulebook(bot_id="cli-organize", name="File organizer (preview)", allowed_folders=approved,
+                        permissions={"fs.read": Policy.ALLOW, "fs.move": Policy.ASK})
+    known = known_permission_names(p for spec in registry.all() for p in spec.permissions)
+    check = validate_rulebook(rulebook, constraints, known)
+    if not check.ok:
+        print(f"Not previewing {folder} -> {destination}:", file=sys.stderr)
+        _print_issues(check, sys.stderr)
+        return EXIT_FAILED
+
+    definition = WorkflowDefinition.model_validate({
+        "id": "cli-organize", "name": "Organize (preview)", "bot_id": "cli-organize",
+        "nodes": [{"id": "start", "type": "core.manual_trigger"},
+                  {"id": "scan", "type": "files.scan_folder", "config": {"folder": str(folder), "recursive": not args.no_recursive,
+                                                                          "include_hidden": args.include_hidden}},
+                  {"id": "plan", "type": "files.plan_moves", "config": plan_config}],
+        "edges": [{"source": "start", "source_port": "payload", "target": "scan", "target_port": "start"},
+                  {"source": "scan", "source_port": "items", "target": "plan", "target_port": "items"}]})
+    validation = parse_and_validate(definition.model_dump(mode="json"), registry)[1]
+    if not validation.ok:
+        print("The settings cannot be used:", file=sys.stderr)
+        _print_issues(validation, sys.stderr)
+        return EXIT_FAILED
+
+    run = Run(definition, registry, rulebook=rulebook, constraints=constraints)
+    if not args.json:
+        run.events.subscribe(lambda e: print(f"  {e.node_id}: {e.payload.get('message', '')}", file=sys.stderr, flush=True)
+                             if e.type == EventType.NODE_PROGRESS and e.payload.get("message") else None)
+    try:
+        asyncio.run(run.execute())
+    except KeyboardInterrupt:
+        print("Cancelled.", file=sys.stderr)
+        return EXIT_CANCELLED
+    if run.status != RunStatus.COMPLETED:
+        error = run.error or {}
+        print(f"Could not finish: {error.get('message', run.status.value)}", file=sys.stderr)
+        return EXIT_FAILED
+
+    scan, result = run.nodes["scan"].outputs, run.nodes["plan"].outputs
+    plan, skipped, stats = result["plan"], result["skipped"], result["stats"]
+    if args.json:
+        print(json.dumps({"folder": str(folder), "scan": scan["stats"], "not_scanned": scan["skipped"], "plan": plan,
+                          "skipped": skipped, "stats": stats}, indent=2))
+        return EXIT_OK
+
+    root = plan["destination_root"]
+    shown = lambda path: path[len(root):].lstrip("\\/") if path.startswith(root) else path  # noqa: E731
+    s = scan["stats"]
+    print(f"Scanned {s['files']} files ({format_size(s['bytes'])}) in {s['folders']} folders of {folder}")
+    print(f"Sorting into: {root}")
+    if not plan["moves"]:
+        print("\nNothing would be moved.")
+    else:
+        sizes: dict[str, int] = {}
+        for move in plan["moves"]:
+            sizes[move["category"]] = sizes.get(move["category"], 0) + move["size"]
+        print(f"\nWould move {stats['moves']} files ({format_size(stats['bytes_to_move'])}); "
+              f"{stats['skipped']} would stay where they are.")
+        for category, count in stats["by_category"].items():
+            print(f"  {category:<20} {count:>6} files  {format_size(sizes[category]):>10}")
+        print(f"\nFirst {min(len(plan['moves']), max(args.top, 0))} moves:")
+        for move in plan["moves"][:max(args.top, 0)]:
+            print(f"  {move['source']}\n      -> {shown(move['destination'])}")
+        if len(plan["moves"]) > args.top:
+            print(f"  ... and {len(plan['moves']) - args.top} more (use --top or --json)")
+        if plan["folders_to_create"]:
+            print(f"\nFolders that would be created: {len(plan['folders_to_create'])}")
+    if skipped:
+        print("\nNot moved:")
+        for code, count in stats["skipped_by_reason"].items():
+            print(f"  {count:>6}  {_SKIP_TEXT.get(code, code)}  [{code}]")
+        for row in [r for r in skipped if r["code"] != "rule.no_match"][:5]:
+            print(f"    {row['path']}: {row['reason']}")
+    if not_scanned := scan["skipped"]:
+        print(f"\nNot scanned: {len(not_scanned)}")
+        for row in not_scanned[:5]:
+            print(f"  {row['path']}  ({row['reason']})")
+    for warning in plan["warnings"]:
+        print(f"\nWarning: {warning['message']}")
+    if plan["approval_required"] and plan["moves"]:
+        print("\nMoving these files would need your approval.")
+    print(f"\nPlan id: {plan['plan_id'][:16]}")
+    print("Preview only: nothing was moved, changed or deleted. This version cannot move files yet.")
+    return EXIT_OK
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "serve": cmd_serve, "nodes": cmd_nodes, "validate": cmd_validate, "run": cmd_run, "rulebook": cmd_rulebook,
-    "duplicates": cmd_duplicates}
+    "duplicates": cmd_duplicates, "organize": cmd_organize}
 
 _OVERVIEW = __doc__
 
