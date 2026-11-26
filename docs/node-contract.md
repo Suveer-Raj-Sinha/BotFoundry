@@ -1,6 +1,6 @@
 # Node contract and workflow format
 
-Status: engine 0.10.0 (Phase 1.1 to 3.1). Code: `engine/botfoundry/workflow/`.
+Status: engine 0.11.0 (Phase 1.1 to 3.2). Code: `engine/botfoundry/workflow/`.
 
 ## A node (a registered, typed operation)
 Every node type is a `NodeSpec` that defines:
@@ -109,6 +109,7 @@ The file nodes are described in `docs/files.md`.
 | `ctx.report_progress(fraction, message)` | Progress events |
 | `ctx.cancel` | Cooperative cancellation token |
 | `ctx.authorize(permission, paths)` | Ask the engine; returns the resolved paths to act on, or raises `NodeError` (see `docs/rulebook.md`) |
+| `ctx.preflight(permission, paths)` | Ask "would this be allowed?" and do nothing: returns `Preflight(outcome, code, message, verdicts)`, one `PathVerdict(path, allowed, code, message)` per path in order. Needs no declared permission and never pauses for approval, so it is for planning and previews only; a step that changes something must declare the permission and use `authorize`. With no Rulebook it denies everything |
 | `await ctx.request_approval(summary, details)` | Pause until a person approves; raises if denied or unanswered |
 | `ctx.budget.consume_files(n)` | Count files against the Rulebook's per-run limit |
 

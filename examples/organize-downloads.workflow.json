@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "organize-downloads",
+  "name": "Preview: organize Downloads",
+  "description": "Plans how Downloads would be sorted into Organized\\Images, Documents and so on. It only plans: nothing is moved. Replace YourName, then: botfoundry run examples/organize-downloads.workflow.json --rulebook examples/downloads-cleaner.rulebook.json --no-save",
+  "bot_id": "downloads-cleaner",
+  "nodes": [
+    {"id": "start", "type": "core.manual_trigger"},
+    {"id": "scan", "type": "files.scan_folder", "config": {"folder": "C:\\Users\\YourName\\Downloads"}},
+    {"id": "hash", "type": "files.hash", "config": {"skip_unique_sizes": false}},
+    {"id": "plan", "type": "files.plan_moves", "config": {
+      "destination_root": "C:\\Users\\YourName\\Downloads\\Organized",
+      "rules": [{"folder": "Invoices", "name_contains": ["invoice", "receipt"], "label": "invoices"}],
+      "use_default_rules": true,
+      "date_folders": "none"
+    }}
+  ],
+  "edges": [
+    {"source": "start", "source_port": "payload", "target": "scan", "target_port": "start"},
+    {"source": "scan", "source_port": "items", "target": "hash", "target_port": "items"},
+    {"source": "hash", "source_port": "items", "target": "plan", "target_port": "items"}
+  ]
+}

@@ -53,6 +53,7 @@ def contains(root: NPath, child: NPath) -> bool:
 _RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
 _RESERVED |= {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
 _RESERVED |= {f"{p}{d}" for p in ("COM", "LPT") for d in "\u00b9\u00b2\u00b3"}
+RESERVED_NAMES = frozenset(_RESERVED)  # public: other modules validate folder names against it
 _SHORT_NAME = re.compile(r"^[^~]{1,8}~\d+(\.[^.]{0,3})?$")
 _DRIVE = re.compile(r"^[A-Za-z]:$")
 _BAD_CHARS = set('<>"|?*')

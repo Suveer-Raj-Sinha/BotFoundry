@@ -20,7 +20,8 @@ from ..rules.permissions import Policy, known_permission_names
 from .approvals import Approval, ApprovalNotFound, ApprovalNotPending, ApprovalStatus
 from .definition import NodeInstance, WorkflowDefinition
 from .events import EventLog, EventType
-from .node import CancelToken, NodeContext, NodeError, NodeResult, NodeSpec, RunBudget, RunCancelled
+from .node import (CancelToken, NodeContext, NodeError, NodeResult, NodeSpec, PathVerdict, Preflight, RunBudget,
+                   RunCancelled)
 from .registry import NodeRegistry
 from .types import matches_type
 from .validation import Severity, ValidationIssue, validate_workflow
@@ -293,6 +294,7 @@ class Run:
                 ctx = NodeContext(run_id=self.run_id, node_id=node.id, cancel=self.cancel_token,
                                   report_progress=self._progress_callback(node.id),
                                   authorize=self._authorizer(node.id, spec, permitted),
+                                  preflight=self._preflighter(),
                                   request_approval=self._approval_requester(node.id), budget=self.budget)
                 result = await self._call_handler(spec, ctx, configs[node.id], inputs)
                 problem = self._check_result(spec, result)
@@ -445,6 +447,23 @@ class Run:
             # allow, or ask that was already approved for this node before it started
             return [p.resolved or p.path for p in decision.paths]
         return authorize
+
+    def _preflighter(self):
+        def preflight(permission: str, paths: Sequence[str] = ()) -> Preflight:
+            """Report what the Rulebook and the system limits would say, and do nothing else."""
+            paths = list(paths)
+            base = evaluate_action(self.rulebook, self.constraints, permission, (),
+                                   known_permissions=self._known_permissions)
+            if base.outcome == Policy.DENY:
+                return Preflight("deny", base.code, base.message,
+                                 tuple(PathVerdict(p, False, base.code, base.message) for p in paths))
+            verdicts: tuple[PathVerdict, ...] = ()
+            if paths:
+                decision = evaluate_action(self.rulebook, self.constraints, permission, paths,
+                                           known_permissions=self._known_permissions)
+                verdicts = tuple(PathVerdict(d.path, d.allowed, d.code, d.message) for d in decision.paths)
+            return Preflight(base.outcome.value, base.code, base.message, verdicts)
+        return preflight
 
     def _approval_requester(self, node_id: str):
         async def request(summary: str, details: dict[str, Any] | None = None,

@@ -1,6 +1,6 @@
 # Persistence (SQLite)
 
-Status: engine 0.10.0 (Phase 1.3, migration 2 from Phase 2.1, approvals from Phase 2.2, output previews from Phase 3.1). Code: `engine/botfoundry/storage/`.
+Status: engine 0.11.0 (Phase 1.3, migration 2 from Phase 2.1, approvals from Phase 2.2, output previews from Phase 3.1). Code: `engine/botfoundry/storage/`.
 
 ## Where data lives
 `<data-dir>/botfoundry.db` (WAL mode, so you will also see `-wal` and `-shm` files while it is open).
